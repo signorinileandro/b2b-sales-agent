@@ -47,7 +47,7 @@
         "jsonParameters": true,
         "options": {},
         "bodyParametersJson": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"541155744089\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": {{ $json.message_body.toJsonString() }}\n  }\n}",
-        "headerParametersJson": "{\n  \"Authorization\": \"Bearer EAAIpUvB7bDIBPFex9FvG5ywPfy5F0Tqj738tfcaUUdjFZBzugvxoqSnlkF0yyFqFSCzvFo9bBnxnZBfSy0LPZB2Io30K2Lho1zwXoR3aqdX7CieUd1XJn1e51bHxFkaZBfhlRiSP7P9wJhJF7yjnmuQ3viTA9I5Cc6vDHQYlDum5qwg8roF9TueELWG4r5NPwXVGrTnsCHpah8Ch9SpuZCpHl5JTuwKuWZAmuSTrnp\"\n}"
+        "headerParametersJson": "{\n  \"Authorization\": \"Bearer <TOKEN>\"\n}"
       },
       "name": "Send WhatsApp Message",
       "type": "n8n-nodes-base.httpRequest",

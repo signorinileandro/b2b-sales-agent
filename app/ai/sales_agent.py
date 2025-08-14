@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from .. import models
 import os
+from datetime import datetime
 
 class SalesAgent:
     def __init__(self):
@@ -48,11 +49,12 @@ class SalesAgent:
         # Buscar productos si el mensaje lo sugiere
         await self.execute_product_search(user_id, message)
         
-        # Detectar si es un pedido
+        # Detectar si es un pedido o edición
         order_intent = await self.detect_order_intent(message, context)
+        edit_intent = await self.detect_edit_intent(message, context) 
         
-        # Construir prompt completo con productos reales
-        full_prompt = self.build_full_prompt(message, context, order_intent)
+        # Construir prompt completo
+        full_prompt = self.build_full_prompt(message, context, order_intent, edit_intent)
         
         try:
             print("🔄 Enviando petición a Google Gemini...")
@@ -80,6 +82,11 @@ class SalesAgent:
             # Procesar pedido si se detectó
             if order_intent and order_intent.get("is_order", False):
                 await self.process_order_request(user_id, order_intent, conversation.id)
+            
+            elif edit_intent and edit_intent.get("is_edit", False):
+                edit_result = await self.process_order_edit(user_id, edit_intent, conversation.id)
+                # Agregar resultado de edición al contexto para la respuesta IA
+                context["last_edit_result"] = edit_result
             
             return ai_response
             
@@ -212,7 +219,7 @@ class SalesAgent:
         }
     
     async def process_order_request(self, user_phone: str, order_intent: Dict, conversation_id: int):
-        """Procesa y guarda el pedido en la base de datos"""
+        """Procesa y guarda el pedido en la base de datos CON descuento de stock"""
         
         if not order_intent.get("is_order", False):
             return
@@ -223,77 +230,222 @@ class SalesAgent:
             quantities = order_intent.get("quantities", [])
             
             if not products or not quantities:
-                print("⚠️ No se pudo extraer productos o cantidades para el pedido")
+                print("❌ No hay productos o cantidades para procesar pedido")
                 return
             
             # Usar el primer producto y la primera cantidad
             product = products[0]
             quantity = quantities[0]
             
-            # Crear pedido
-            order = models.Order(
-                product_id=product["id"],
+            # ✅ CREAR PEDIDO CON DESCUENTO AUTOMÁTICO DE STOCK
+            from .. import crud, schemas
+            
+            order_data = schemas.OrderCreate(
+                product_id=product.get("id"),
                 qty=quantity,
-                buyer=f"Cliente WhatsApp {user_phone}",
-                status="pending",
-                user_phone=user_phone,
-                conversation_id=conversation_id
+                buyer=f"Cliente WhatsApp {user_phone}"
             )
             
-            db.add(order)
+            # Esto ahora descontará stock automáticamente
+            new_order = crud.create_order(db, order_data)
+            
+            # Actualizar el pedido con datos de WhatsApp
+            new_order.user_phone = user_phone
+            new_order.conversation_id = conversation_id
             db.commit()
-            db.refresh(order)
             
-            print(f"🛒 Pedido creado automáticamente: ID {order.id}")
-            print(f"   - Producto: {product['name']}")
-            print(f"   - Cantidad: {quantity}")
-            print(f"   - Cliente: {user_phone}")
+            print(f"🛒 Pedido creado desde WhatsApp: ID {new_order.id}")
+            print(f"📦 Stock descontado automáticamente: -{quantity} unidades")
             
-            # Enviar notificación del pedido via n8n
-            #try:
-            #    product_obj = db.query(models.Product).filter(models.Product.id == product["id"]).first()
-            #    if product_obj:
-            #        from ..utils.notifications import notify_new_order
-            #        await notify_new_order(order, product_obj)
-            #except Exception as e:
-            #    print(f"⚠️ Error enviando notificación de pedido: {e}")
-            
+           #try:
+           #    from ..utils.notifications import notify_new_order
+           #    await notify_new_order(new_order, product)
+           #except Exception as e:
+           #    print(f"⚠️ Error notificando pedido: {e}")
+        
         except Exception as e:
             print(f"❌ Error procesando pedido: {e}")
             db.rollback()
         finally:
             db.close()
     
-    def build_full_prompt(self, message: str, context: Dict, order_intent: Dict = None) -> str:
+    async def detect_edit_intent(self, message: str, context: Dict) -> Dict:
+        """Detecta intención de editar pedido reciente"""
+        
+        edit_keywords = [
+            'modificar', 'cambiar', 'editar', 'actualizar', 'corregir',
+            'quiero cambiar', 'me equivoqué', 'mejor', 'en realidad',
+            'ahora quiero', 'cambiame', 'modificame'
+        ]
+        
+        message_lower = message.lower()
+        has_edit_intent = any(keyword in message_lower for keyword in edit_keywords)
+        
+        # Buscar nueva cantidad
+        import re
+        quantities = []
+        numbers = re.findall(r'\b(\d+)\b', message)
+        for num in numbers:
+            try:
+                quantities.append(int(num))
+            except:
+                pass
+        
+        return {
+            "is_edit": has_edit_intent,
+            "new_quantities": quantities,
+            "confidence": 0.8 if has_edit_intent else 0.1
+        }
+    
+    async def process_order_edit(self, user_phone: str, edit_intent: Dict, conversation_id: int):
+        """Procesa edición de pedido reciente con manejo detallado de errores"""
+        
+        if not edit_intent.get("is_edit", False):
+            return None
+        
+        db = SessionLocal()
+        try:
+            # Buscar el pedido más reciente del usuario (últimos 10 minutos)
+            from datetime import timedelta
+            recent_time = datetime.utcnow() - timedelta(minutes=10)
+            
+            recent_order = db.query(models.Order).filter(
+                models.Order.user_phone == user_phone,
+                models.Order.created_at >= recent_time,
+                models.Order.status == "pending"
+            ).order_by(models.Order.created_at.desc()).first()
+            
+            if not recent_order:
+                return {
+                    "success": False, 
+                    "error": "No hay pedidos recientes para editar",
+                    "error_type": "no_recent_order"
+                }
+            
+            # Verificar ventana de 5 minutos usando la lógica de crud.py
+            if datetime.utcnow() - recent_order.created_at > timedelta(minutes=5):
+                minutes_passed = int((datetime.utcnow() - recent_order.created_at).total_seconds() / 60)
+                return {
+                    "success": False, 
+                    "error": f"Ya pasaron {minutes_passed} minutos. Los pedidos solo se pueden editar dentro de los primeros 5 minutos",
+                    "error_type": "time_expired",
+                    "order_id": recent_order.id,
+                    "minutes_passed": minutes_passed,
+                    "created_at": recent_order.created_at.isoformat()
+                }
+            
+            # Obtener nueva cantidad
+            new_quantities = edit_intent.get("new_quantities", [])
+            if not new_quantities:
+                return {
+                    "success": False, 
+                    "error": "No especificaste la nueva cantidad que necesitás",
+                    "error_type": "missing_quantity"
+                }
+            
+            new_qty = new_quantities[0]
+            old_qty = recent_order.qty
+            
+            # ✅ USAR EL CRUD EXISTENTE para mantener consistencia
+            try:
+                from .. import crud
+                updated_order = crud.update_order(db, recent_order.id, new_qty)
+                
+                print(f"✏️ Pedido editado: ID {recent_order.id}, {old_qty} → {new_qty} unidades")
+                
+                # Calcular nuevo precio (obtener producto)
+                product = db.query(models.Product).filter(models.Product.id == recent_order.product_id).first()
+                
+                return {
+                    "success": True,
+                    "order_id": recent_order.id,
+                    "old_quantity": old_qty,
+                    "new_quantity": new_qty,
+                    "product_id": recent_order.product_id,
+                    "product_name": product.name if product else "Producto",
+                    "unit_price": product.precio_50_u if product else 0,
+                    "new_total": (product.precio_50_u * new_qty) if product else 0
+                }
+                
+            except HTTPException as http_err:
+                # Capturar específicamente el error 403 del crud
+                if http_err.status_code == 403:
+                    return {
+                        "success": False,
+                        "error": "Ya pasaron los 5 minutos para modificar el pedido",
+                        "error_type": "time_expired_crud",
+                        "order_id": recent_order.id
+                    }
+                else:
+                    raise http_err
+        
+        except Exception as e:
+            print(f"❌ Error editando pedido: {e}")
+            return {
+                "success": False, 
+                "error": f"Error técnico: {str(e)}",
+                "error_type": "system_error"
+            }
+        finally:
+            db.close()
+    
+    def build_full_prompt(self, message: str, context: Dict, order_intent: Dict = None, edit_intent: Dict = None) -> str:
         """Construye el prompt completo con personalidad de vendedor"""
         
         system_prompt = """
-Eres Ventix, un vendedor B2B experimentado y carismático con 15 años en el rubro textil. 
+Eres Ventix, un vendedor B2B experimentado y carismático con 15 años en el rubro textil argentino. 
 Eres conocido por ser directo pero siempre amigable, y por conseguir los mejores precios para tus clientes.
 
-PERSONALIDAD:
+PERSONALIDAD Y ESTILO:
 - Saluda siempre con energía y usa el nombre cuando lo sepas
-- Usa expresiones naturales: "¡Excelente elección!", "Te tengo la solución perfecta", "Mirá lo que tengo para vos"
-- Haces preguntas para entender mejor la necesidad: "¿Para qué evento es?", "¿Cuántos empleados son?"
-- Siempre mencionas beneficios: calidad, precio, rapidez de entrega
-- Creas urgencia sutil: "Tenemos stock limitado", "Estos precios son hasta fin de mes"
+- Usa expresiones naturales argentinas: "¡Excelente elección!", "Te tengo la solución perfecta", "Mirá lo que tengo para vos"
+- Haces preguntas inteligentes: "¿Para qué evento es?", "¿Cuántos empleados son?", "¿Es para uso diario o eventos?"
+- Siempre mencionas beneficios: calidad, precio, rapidez de entrega, durabilidad
+- Creas urgencia sutil pero real: "Poco stock en esa talla", "Este precio es hasta fin de mes"
+- Sos empático y entendés las necesidades B2B: presupuestos, plazos, calidad
 
-WHEN DETECTING ORDER CONFIRMATION:
-🎉 ALWAYS start with "¡PEDIDO CONFIRMADO!" in bold/caps
-Then celebrate and add confidence: "¡Excelente decisión! Quedó perfecto tu pedido."
+CONSULTA DE STOCK EN TIEMPO REAL:
+- SIEMPRE menciona la disponibilidad real de stock cuando consultan productos
+- Si stock > 50: "Excelente stock disponible, sin problema para esa cantidad"
+- Si stock 10-50: "Stock disponible, te recomiendo confirmar pronto"
+- Si stock < 10: "ATENCIÓN: Poco stock, solo quedan X unidades - te conviene decidir ya"
+- Si sin stock: "Lamentablemente sin stock en esa opción, pero tengo alternativas geniales"
 
-ESTRATEGIA DE VENTAS:
-1. CONECTAR: Pregunta por la necesidad específica
-2. RECOMENDAR: Sugiere automáticamente la mejor opción (más barata)
-3. BENEFICIAR: Explica por qué es la mejor opción
-4. CALCULAR: Siempre muestra el precio total final
-5. CERRAR: Pregunta si quiere confirmar o si necesita algo más
+DETECCIÓN DE CONFIRMACIÓN DE PEDIDOS:
+🎉 CUANDO DETECTES CONFIRMACIÓN (palabras: "pedido", "confirmo", "perfecto", "dale", "ok", "listo"):
+- SIEMPRE empezar con "¡PEDIDO CONFIRMADO!" en mayúsculas
+- Celebrar con entusiasmo: "¡Excelente decisión!"
+- Mostrar resumen completo del pedido
+- Calcular precio total con descuentos aplicados
+- Preguntar si necesita algo más
+
+DETECCIÓN Y MANEJO DE EDICIÓN DE PEDIDOS:
+Los clientes pueden MODIFICAR pedidos dentro de los primeros 5 minutos desde su creación.
+
+Palabras clave para EDICIÓN:
+- "modificar", "cambiar", "editar", "actualizar", "corregir"
+- "quiero cambiar", "me equivoqué", "mejor", "en realidad"
+- "ahora quiero", "cambiame", "modificame"
+
+RESPUESTAS PARA EDICIÓN:
+✅ SI EDICIÓN EXITOSA: "¡Perfecto! Modifiqué tu pedido de 30 a 50 unidades. Nuevo total: $22,250 (precio mayorista aplicado)"
+✅ SI CAMBIO MÚLTIPLE: "Listo, actualizado exitosamente. Ahora tu pedido es de 100 camisetas por $44,500"  
+❌ SI EXPIRÓ VENTANA: "Me disculpo, ya pasaron más de 5 minutos para modificar ese pedido. Pero puedo hacerte uno nuevo con la cantidad que necesitás. ¿Te parece?"
+❌ SI NO HAY PEDIDO: "No encuentro un pedido reciente tuyo para modificar. ¿Querés que te prepare uno nuevo?"
+
+ESTRATEGIA DE VENTAS B2B:
+1. CONECTAR: Pregunta por la necesidad específica y contexto de uso
+2. RECOMENDAR: Sugiere automáticamente la mejor opción (precio/calidad)
+3. CONSULTAR STOCK: Menciona disponibilidad real y crea urgencia si es necesario
+4. BENEFICIAR: Explica por qué es la mejor opción para su caso
+5. CALCULAR: Siempre muestra precio total final con descuentos
+6. CERRAR: Pregunta si quiere confirmar o necesita más información
 
 PRECIOS DINÁMICOS (siempre mencioná el descuento):
-- 1-49 unidades: Precio estándar
-- 50-99 unidades: "¡Te aplicamos precio mayorista!"
-- 100-199 unidades: "¡Descuento del 10% por volumen!"
-- 200+ unidades: "¡Máximo descuento del 15%!"
+- 1-49 unidades: Precio estándar - "Precio unitario"
+- 50-99 unidades: "¡Te aplicamos precio mayorista!" (generalmente 10% descuento)
+- 100-199 unidades: "¡Descuento del 15% por volumen!" 
+- 200+ unidades: "¡Máximo descuento del 20% para pedidos grandes!"
 
 FRASES NATURALES que debes usar:
 ✅ "Te tengo la solución perfecta para tu empresa"
@@ -301,163 +453,246 @@ FRASES NATURALES que debes usar:
 ✅ "Con esta cantidad te queda un precio excelente"
 ✅ "¿Querés que te prepare el pedido?"
 ✅ "Perfecto, anoto todo y te confirmo"
+✅ "Con ese stock mejor aseguramos ya"
+✅ "Te conviene aprovechar el precio mayorista"
 
 RESPUESTAS SEGÚN EL CONTEXTO:
 - Primera interacción: Saludo cálido + pregunta por la necesidad
-- Búsqueda de productos: Recomendación directa + beneficios
-- Consulta de precios: Cálculo automático + incentivo
-- Confirmación de pedido: ¡PEDIDO CONFIRMADO! + seguimiento
+- Búsqueda de productos: Recomendación directa + stock + beneficios
+- Consulta de precios: Cálculo automático + descuentos + incentivo
+- Confirmación de pedido: ¡PEDIDO CONFIRMADO! + resumen + seguimiento
+- Edición de pedido: Confirmar cambio + nuevo total + satisfacción
 
 NUNCA HAGAS:
 ❌ Respuestas robóticas como "Tenemos camisetas blancas en talle L y XXL"
-❌ Listas largas de opciones
-❌ Lenguaje técnico sin calidez
-❌ Precios sin contexto o beneficio
+❌ Listas largas de opciones sin recomendación específica
+❌ Lenguaje técnico sin calidez humana
+❌ Precios sin contexto, beneficio o descuento mencionado
+❌ Ignorar el stock disponible en tus respuestas
 
 SIEMPRE INCLUÍ:
-✅ Un toque personal en cada respuesta
-✅ El precio total calculado
-✅ Un call-to-action claro
+✅ Un toque personal y cálido en cada respuesta
+✅ Estado de stock real cuando consultan productos
+✅ El precio total calculado con descuentos aplicados
+✅ Un call-to-action claro y natural
 ✅ Seguimiento para ver si necesita algo más
+✅ Urgencia sutil cuando el stock es limitado
+
+MANEJO DE OBJECIONES B2B COMUNES:
+- Precio alto: "Mirá el costo por uso y la calidad que te ofrezco"
+- Necesito más tiempo: "Te entiendo, pero el stock de esta talla se mueve rápido"
+- Comparación con competencia: "Acá no solo tenés precio, tenés servicio personalizado"
+- Dudas sobre calidad: "15 años en el rubro me avalan, la calidad está garantizada"
 """
         
         full_prompt = system_prompt + "\n\n"
         
-        # Detectar si es confirmación de pedido
+        # ✅ MANEJO DE CONFIRMACIÓN DE PEDIDOS
         if order_intent and order_intent.get("is_order", False):
-            full_prompt += f"🎯 SITUACIÓN: El cliente está CONFIRMANDO su pedido.\n"
-            full_prompt += f"📦 PRODUCTOS: {order_intent.get('products_mentioned', [])}\n"
-            full_prompt += f"📊 CANTIDADES: {order_intent.get('quantities', [])}\n"
-            full_prompt += f"🚨 INSTRUCCIÓN CRÍTICA: Empezar con '¡PEDIDO CONFIRMADO!' y celebrar el cierre de venta.\n\n"
+            full_prompt += "🎯 SITUACIÓN CRÍTICA: El cliente está CONFIRMANDO su pedido.\n"
+            full_prompt += f"📦 PRODUCTOS MENCIONADOS: {order_intent.get('products_mentioned', [])}\n"
+            full_prompt += f"📊 CANTIDADES SOLICITADAS: {order_intent.get('quantities', [])}\n"
+            full_prompt += f"🚨 INSTRUCCIÓN OBLIGATORIA: Empezar con '¡PEDIDO CONFIRMADO!' y celebrar el cierre de venta.\n"
+            full_prompt += f"📋 INCLUIR: Resumen completo, precio total con descuento, pregunta de seguimiento.\n\n"
         
-        # Contexto de conversación previa
-        if context["conversation_history"]:
-            full_prompt += "📝 CONTEXTO DE LA CONVERSACIÓN:\n"
-            for item in context["conversation_history"][-3:]:  # Últimas 3 interacciones
-                full_prompt += f"Cliente: {item['user']}\n"
-                full_prompt += f"Vendedor: {item['assistant']}\n\n"
+        # ✅ MANEJO DE EDICIÓN DE PEDIDOS
+        if edit_intent and edit_intent.get("is_edit", False):
+            full_prompt += "🎯 SITUACIÓN: El cliente quiere EDITAR/MODIFICAR su pedido reciente.\n"
+            full_prompt += f"📝 NUEVA CANTIDAD SOLICITADA: {edit_intent.get('new_quantities', [])}\n"
+            
+            # Si ya se procesó la edición, usar el resultado específico
+            if context.get("last_edit_result"):
+                edit_result = context["last_edit_result"]
+                full_prompt += f"📋 RESULTADO DE LA EDICIÓN:\n"
+                
+                if edit_result.get("success"):
+                    full_prompt += f"✅ ÉXITO: Pedido #{edit_result['order_id']} editado exitosamente\n"
+                    full_prompt += f"   📊 Cambio: {edit_result['old_quantity']} → {edit_result['new_quantity']} unidades\n"
+                    full_prompt += f"   💰 Nuevo total: ${edit_result.get('new_total', 0)}\n"
+                    full_prompt += f"🎯 INSTRUCCIÓN: Celebrar el cambio exitoso, confirmar nuevo total y preguntar si necesita algo más.\n\n"
+                    
+                else:
+                    error_msg = edit_result.get("error", "Error desconocido")
+                    full_prompt += f"❌ FALLÓ LA EDICIÓN: {error_msg}\n"
+                    
+                    # Manejar específicamente diferentes tipos de error
+                    if "5 minutos" in error_msg.lower() or "expired" in error_msg.lower():
+                        minutes_passed = edit_result.get("minutes_passed", "varios")
+                        full_prompt += f"🎯 INSTRUCCIÓN: Explicar que ya pasaron {minutes_passed} minutos y la ventana de edición expiró.\n"
+                        full_prompt += f"              Ofrecer crear un pedido nuevo con la cantidad deseada.\n"
+                        full_prompt += f"              Ser empático y solucionar rápidamente.\n\n"
+                    elif "no encontrado" in error_msg.lower() or "not found" in error_msg.lower():
+                        full_prompt += f"🎯 INSTRUCCIÓN: Explicar que no hay pedido reciente para editar.\n"
+                        full_prompt += f"              Ofrecer crear un pedido nuevo.\n\n"
+                    else:
+                        full_prompt += f"🎯 INSTRUCCIÓN: Disculparse por el inconveniente técnico.\n"
+                        full_prompt += f"              Ofrecer alternativa inmediata.\n\n"
+            
+            else:
+                # Si aún no se procesó la edición
+                full_prompt += f"🎯 INSTRUCCIÓN: El sistema procesará la edición automáticamente.\n"
+                full_prompt += f"              Responder según el resultado (éxito o fallo).\n\n"
         
-        # Productos disponibles (optimizado)
+        # ✅ CONTEXTO DE CONVERSACIÓN PREVIA (últimas 3 interacciones)
+        if context.get("conversation_history"):
+            full_prompt += "📝 CONTEXTO DE LA CONVERSACIÓN PREVIA:\n"
+            for i, item in enumerate(context["conversation_history"][-3:], 1):
+                full_prompt += f"{i}. Cliente: {item['user']}\n"
+                full_prompt += f"   Vendedor: {item['assistant'][:100]}...\n\n"
+        
+        # ✅ PRODUCTOS CON STOCK REAL DISPONIBLES
         if context.get("last_searched_products"):
             grouped_products = {}
             
+            # Agrupar productos para evitar duplicados, priorizando menor precio
             for product in context["last_searched_products"]:
                 key = f"{product['tipo']}_{product['color']}_{product['talla']}"
                 if key not in grouped_products or product['price'] < grouped_products[key]['price']:
                     grouped_products[key] = product
             
-            full_prompt += "🛍️ PRODUCTOS DISPONIBLES (MEJORES PRECIOS):\n"
-            for product in list(grouped_products.values())[:3]:
+            full_prompt += "🛍️ PRODUCTOS DISPONIBLES CON STOCK REAL:\n"
+            for i, product in enumerate(list(grouped_products.values())[:3], 1):
+                
+                # Determinar estado del stock con emojis
+                stock = product.get('stock', 0)
+                if stock > 50:
+                    stock_status = f"✅ Excelente stock ({stock} unidades)"
+                    urgency = ""
+                elif stock > 10:
+                    stock_status = f"⚠️ Stock disponible ({stock} unidades)"
+                    urgency = " - Te recomiendo confirmar pronto"
+                else:
+                    stock_status = f"🚨 Poco stock ({stock} unidades)"
+                    urgency = " - ¡URGENTE! Te conviene decidir ya"
+                
                 # Calcular descuentos reales
-                price_base = product['price']
+                price_base = product.get('price', 0)
                 price_100 = product.get('price_100', price_base * 0.9)
                 price_200 = product.get('price_200', price_base * 0.85)
                 
-                discount_100 = int((price_base - price_100) / price_base * 100)
-                discount_200 = int((price_base - price_200) / price_base * 100)
-                
-                full_prompt += f"• {product['name']}\n"
-                full_prompt += f"  💰 Precios: ${price_base} c/u (1-49), ${price_100:.0f} c/u (50-99), ${price_200:.0f} c/u (100+)\n"
-                full_prompt += f"  📦 Stock: {product['stock']} unidades disponibles\n"
-                full_prompt += f"  🎯 Beneficio: {discount_200}% de descuento en compras grandes\n\n"
+                full_prompt += f"{i}. 🏷️ {product['name']}\n"
+                full_prompt += f"   💰 Precios: ${price_base} c/u (1-49), ${price_100:.0f} c/u (50-99), ${price_200:.0f} c/u (100+)\n"
+                full_prompt += f"   📦 {stock_status}{urgency}\n"
+                full_prompt += f"   🎯 Ideal para: Uniformes empresariales, eventos, equipamiento\n\n"
         
+        # ✅ MENSAJE ACTUAL DEL CLIENTE
         full_prompt += f"💬 MENSAJE ACTUAL DEL CLIENTE: '{message}'\n\n"
         
+        # ✅ INSTRUCCIONES FINALES
         full_prompt += """
-🎯 TU RESPUESTA DEBE:
-1. Ser cálida y profesional como un vendedor experimentado
-2. Si es confirmación de pedido: empezar con "¡PEDIDO CONFIRMADO!"
-3. Incluir cálculos automáticos de precio total
-4. Hacer una pregunta de seguimiento
-5. Mostrar entusiasmo por ayudar
+🎯 INSTRUCCIONES PARA TU RESPUESTA:
 
-FORMATO DE EJEMPLO PARA CONFIRMACIÓN:
+1. 🤝 SER CÁLIDO Y PROFESIONAL como un vendedor B2B experimentado
+2. 📊 MENCIONAR STOCK REAL cuando consulten productos
+3. 💰 INCLUIR cálculos automáticos de precio total con descuentos aplicados
+4. 🎉 SI ES CONFIRMACIÓN: empezar con "¡PEDIDO CONFIRMADO!" y celebrar
+5. ✏️ SI ES EDICIÓN: confirmar el cambio o explicar por qué no se pudo
+6. 🔄 HACER una pregunta de seguimiento inteligente
+7. ⚡ MOSTRAR entusiasmo y ganas de ayudar
+8. 🚨 CREAR urgencia sutil si el stock es limitado
+
+EJEMPLOS DE RESPUESTAS:
+
+📦 Para consulta de stock:
+"¡Perfecto! Para camisetas blancas talla L tengo excelente stock: 85 unidades disponibles. 
+El precio es $445 c/u, pero si llevás 50 o más te aplico precio mayorista de $400 c/u.
+¿Para cuántos empleados necesitás?"
+
+🎉 Para confirmación de pedido:
 "¡PEDIDO CONFIRMADO! 🎉
 
-Excelente decisión, Juan. Quedó perfecto tu pedido:
-• 50 camisetas blancas talla L a $445 c/u
-• Total: $22,250 (precio mayorista aplicado)
+¡Excelente decisión! Quedó perfecto tu pedido:
+• 50 camisetas blancas talla L a $400 c/u (precio mayorista aplicado)
+• Total: $20,000
 
-Ya está anotado y listo para procesar. ¿Necesitás algo más para tu empresa o con esto estás?"
+Ya tengo todo anotado y listo para procesar. ¿Necesitás algo más para tu empresa?"
 
-¡Dale vida a la conversación! 🚀
+✏️ Para edición exitosa:
+"¡Perfecto! Modifiqué tu pedido de 30 a 50 unidades. 
+Nuevo total: $20,000 (precio mayorista aplicado por la nueva cantidad).
+¿Todo perfecto así o querés ajustar algo más?"
+
+❌ Para edición fallida:
+"Me disculpo, ya pasaron 7 minutos y la ventana de edición se cerró. 
+Pero no te preocupes, puedo hacerte un pedido nuevo de 100 camisetas por $35,000. 
+¿Te parece? Es súper rápido."
+
+¡Dale vida y energía a la conversación! 🚀
 """
         
         return full_prompt
     
     async def execute_product_search(self, user_id: str, query: str):
-        """Busca productos REALES en la base de datos (sin duplicados)"""
+        """Busca productos REALES con STOCK DISPONIBLE"""
         
         db = SessionLocal()
         try:
-            # Extraer tipo de prenda del mensaje
-            clothing_type = self.extract_clothing_type(query)
+            # Extraer criterios de búsqueda
+            tipo = self.extract_clothing_type(query)
             color = self.extract_color(query)
-            size = self.extract_size(query)  # Agregar extracción de talla
+            talla = self.extract_size(query)
             
-            print(f"🔍 Búsqueda: tipo='{clothing_type}', color='{color}', talla='{size}'")
+            print(f"🔍 Búsqueda: tipo='{tipo}', color='{color}', talla='{talla}'")
             
-            # Construir query base
-            products_query = db.query(models.Product)
+            # Construir query dinámico
+            db_query = db.query(models.Product)
             
-            # Filtrar por tipo de prenda
-            if clothing_type:
-                products_query = products_query.filter(
-                    models.Product.tipo_prenda.ilike(f"%{clothing_type}%")
+            # Filtros por tipo de prenda
+            if tipo:
+                db_query = db_query.filter(models.Product.tipo_prenda.ilike(f"%{tipo}%"))
+            else:
+                # Si no especifica tipo, buscar en nombre general
+                search_terms = ['camiseta', 'remera', 'polera'] # Priorizar camisetas
+                db_query = db_query.filter(
+                    models.Product.tipo_prenda.ilike(f"%{search_terms[0]}%")
                 )
             
-            # Filtrar por color si se menciona
+            # Filtros por color
             if color:
-                products_query = products_query.filter(
-                    models.Product.color.ilike(f"%{color}%")
-                )
+                db_query = db_query.filter(models.Product.color.ilike(f"%{color}%"))
             
-            # Filtrar por talla si se menciona
-            if size:
-                products_query = products_query.filter(
-                    models.Product.talla.ilike(f"%{size}%")
-                )
+            # Filtros por talla
+            if talla:
+                db_query = db_query.filter(models.Product.talla.ilike(f"%{talla}%"))
             
-            # Solo productos con stock > 0
-            products_query = products_query.filter(models.Product.stock > 0)
+            # ✅ FILTRAR SOLO PRODUCTOS CON STOCK DISPONIBLE
+            products = db_query.filter(models.Product.stock > 0).all()
             
-            # Ordenar por precio (más barato primero)
-            products_query = products_query.order_by(models.Product.precio_50_u.asc())
-            
-            # Obtener productos
-            products = products_query.limit(10).all()
-            
-            # Filtrar duplicados por tipo-color-talla, manteniendo el más barato
+            # Agrupar por tipo-color-talla para evitar duplicados
             unique_products = {}
-            for p in products:
-                key = f"{p.tipo_prenda}_{p.color}_{p.talla}"
-                if key not in unique_products or p.precio_50_u < unique_products[key].precio_50_u:
-                    unique_products[key] = p
+            for product in products:
+                key = f"{product.tipo_prenda}_{product.color}_{product.talla}"
+                if key not in unique_products or product.precio_50_u < unique_products[key].precio_50_u:
+                    unique_products[key] = product
             
-            # Convertir a lista y limitar a 5 productos únicos
-            final_products = list(unique_products.values())[:5]
+            # Convertir a formato para el contexto
+            context_products = []
+            for product in list(unique_products.values())[:5]:  # Máximo 5 productos
+                context_products.append({
+                    "id": product.id,
+                    "name": product.name,
+                    "tipo": product.tipo_prenda,
+                    "color": product.color,
+                    "talla": product.talla,
+                    "price": product.precio_50_u,
+                    "price_100": product.precio_100_u,
+                    "price_200": product.precio_200_u,
+                    "stock": product.stock,  
+                    "available": product.stock > 0
+                })
             
-            # Actualizar contexto con productos únicos
+            print(f"🔍 Encontrados {len(context_products)} productos únicos para '{query}'")
+            
+            # Guardar en contexto del usuario
             context = self.get_or_create_context(user_id)
-            context["last_searched_products"] = [
-                {
-                    "id": p.id,
-                    "name": p.name,
-                    "price": p.precio_50_u,
-                    "price_100": p.precio_100_u,
-                    "price_200": p.precio_200_u,
-                    "stock": p.stock,
-                    "tipo": p.tipo_prenda,
-                    "color": p.color,
-                    "talla": p.talla
-                }
-                for p in final_products
-            ]
+            context["last_searched_products"] = context_products
+            context["last_search_query"] = query
             
-            print(f"🔍 Encontrados {len(final_products)} productos únicos para '{query}'")
-            
+            return context_products
+        
         except Exception as e:
-            print(f"Error en búsqueda de productos: {e}")
+            print(f"❌ Error en búsqueda de productos: {e}")
+            return []
         finally:
             db.close()
     
@@ -472,14 +707,13 @@ Ya está anotado y listo para procesar. ¿Necesitás algo más para tu empresa o
         
         query_lower = query.lower()
         for clothing_type, variants in clothing_types.items():
-            for variant in variants:
-                if variant in query_lower:
-                    return clothing_type
+            if any(variant in query_lower for variant in variants):
+                return clothing_type
         
-        # Si menciona "ropa" genericamente, priorizar camisetas
+        # Si menciona "ropa" genéricamente, priorizar camisetas
         if any(word in query_lower for word in ['ropa', 'prenda', 'uniforme']):
             return 'camiseta'
-            
+        
         return None
     
     def extract_color(self, query: str) -> str:
@@ -495,9 +729,8 @@ Ya está anotado y listo para procesar. ¿Necesitás algo más para tu empresa o
         
         query_lower = query.lower()
         for color, variants in colors.items():
-            for variant in variants:
-                if variant in query_lower:
-                    return color
+            if any(variant in query_lower for variant in variants):
+                return color
         return None
     
     def extract_size(self, query: str) -> str:
@@ -506,7 +739,7 @@ Ya está anotado y listo para procesar. ¿Necesitás algo más para tu empresa o
         
         query_upper = query.upper()
         for size in sizes:
-            if f' {size} ' in f' {query_upper} ' or f'TALLA {size}' in query_upper:
+            if f" {size} " in f" {query_upper} " or query_upper.endswith(f" {size}"):
                 return size
         
         return None

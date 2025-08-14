@@ -1,40 +1,64 @@
-import json
+import os
 import re
-from typing import Dict, List, Optional
+import json
+import time
 import google.generativeai as genai
+from typing import Dict, List, Optional
+from datetime import datetime, timedelta
 from fuzzywuzzy import fuzz
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from ..database import SessionLocal
 from .. import models
-import os
-from datetime import datetime
 
 class SalesAgent:
     def __init__(self):
-        api_key = os.getenv("GOOGLE_API_KEY")
-        print(f"🔑 GOOGLE_API_KEY configurada: {'Sí' if api_key else 'No'}")
-        print(f"🔑 Longitud de API key: {len(api_key) if api_key else 0}")
+        # ✅ CARGAR MÚLTIPLES API KEYS DE FORMA SIMPLE
+        self.api_keys = []
+        for i in range(1, 11):  # Buscar hasta 10 keys
+            key = os.getenv(f"GOOGLE_API_KEY_{i}")
+            if key:
+                self.api_keys.append(key.strip())
         
-        if not api_key:
-            print("⚠️ GOOGLE_API_KEY no configurada")
-            self.model = None
-        else:
-            try:
-                genai.configure(api_key=api_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
-                print("✅ Cliente Gemini inicializado correctamente")
-            except Exception as e:
-                print(f"❌ Error inicializando cliente Gemini: {e}")
-                self.model = None
+        # Si no hay keys numeradas, usar la principal
+        if not self.api_keys:
+            main_key = os.getenv("GOOGLE_API_KEY")
+            if main_key:
+                self.api_keys.append(main_key)
+        
+        self.current_key_index = 0
+        self.model = None
+        
+        print(f"🔑 {len(self.api_keys)} API keys cargadas")
+        self._setup_current_key()
         
         self.context_memory: Dict[str, Dict] = {}
-        
+    
+    def _setup_current_key(self):
+        """Configura la API key actual"""
+        if self.current_key_index < len(self.api_keys):
+            try:
+                current_key = self.api_keys[self.current_key_index]
+                genai.configure(api_key=current_key)
+                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                print(f"✅ Usando API Key #{self.current_key_index + 1}")
+                return True
+            except:
+                return False
+        return False
+    
+    def _try_next_key(self):
+        """Intenta la siguiente key"""
+        self.current_key_index += 1
+        print(f"🔄 Rotando a key #{self.current_key_index + 1}")
+        return self._setup_current_key()
+
     async def process_message(self, user_id: str, message: str) -> str:
         """Procesa mensaje del usuario con Google Gemini"""
         
         print(f"🤖 Procesando mensaje de {user_id}: {message}")
         
-        if not self.model:
+        if not self.api_keys:
             return "Lo siento, el agente IA no está disponible en este momento."
         
         # Obtener o crear conversación en BD
@@ -56,44 +80,64 @@ class SalesAgent:
         # Construir prompt completo
         full_prompt = self.build_full_prompt(message, context, order_intent, edit_intent)
         
-        try:
-            print("🔄 Enviando petición a Google Gemini...")
+        # ✅ INTENTAR CON ROTACIÓN SIMPLE
+        max_attempts = len(self.api_keys)
+        
+        for attempt in range(max_attempts):
+            if not self.model:
+                if not self._try_next_key():
+                    break
             
-            response = self.model.generate_content(
-                full_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.7,
-                    max_output_tokens=800,
+            try:
+                print(f"🔄 Intento {attempt + 1} con key #{self.current_key_index + 1}")
+                
+                response = self.model.generate_content(
+                    full_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.7,
+                        max_output_tokens=800,
+                    )
                 )
-            )
-            
-            ai_response = response.text
-            print(f"✅ Respuesta recibida de Gemini: {ai_response[:100]}...")
-            
-            # Guardar respuesta del asistente
-            await self.save_message(conversation.id, "assistant", ai_response, order_intent)
-            
-            # Actualizar contexto
-            context["conversation_history"].append({
-                "user": message,
-                "assistant": ai_response
-            })
-            
-            # Procesar pedido si se detectó
-            if order_intent and order_intent.get("is_order", False):
-                await self.process_order_request(user_id, order_intent, conversation.id)
-            
-            elif edit_intent and edit_intent.get("is_edit", False):
-                edit_result = await self.process_order_edit(user_id, edit_intent, conversation.id)
-                # Agregar resultado de edición al contexto para la respuesta IA
-                context["last_edit_result"] = edit_result
-            
-            return ai_response
-            
-        except Exception as e:
-            print(f"❌ Error con Gemini: {e}")
-            return f"Disculpa, tuve un problema técnico: {str(e)}"
-    
+                
+                ai_response = response.text
+                print(f"✅ Respuesta recibida exitosamente")
+                
+                # Guardar respuesta del asistente
+                await self.save_message(conversation.id, "assistant", ai_response, order_intent)
+                
+                # Actualizar contexto
+                context["conversation_history"].append({
+                    "user": message,
+                    "assistant": ai_response
+                })
+                
+                # Procesar pedido si se detectó
+                if order_intent and order_intent.get("is_order", False):
+                    await self.process_order_request(user_id, order_intent, conversation.id)
+                
+                elif edit_intent and edit_intent.get("is_edit", False):
+                    edit_result = await self.process_order_edit(user_id, edit_intent, conversation.id)
+                    context["last_edit_result"] = edit_result
+                
+                return ai_response
+                
+            except Exception as e:
+                error_str = str(e).lower()
+                print(f"❌ Error con key #{self.current_key_index + 1}: {e}")
+                
+                # Si es error de cuota, probar siguiente key
+                if "429" in error_str or "quota" in error_str or "exceeded" in error_str:
+                    print(f"🚫 Cuota agotada, probando siguiente key...")
+                    if not self._try_next_key():
+                        break
+                    continue
+                else:
+                    # Otro tipo de error, no rotar
+                    break
+        
+        # Si llegamos acá, todas las keys fallaron
+        return "Lo siento, tengo problemas técnicos temporales. Intenta en unos minutos."
+
     async def get_or_create_conversation(self, user_phone: str):
         """Obtiene o crea conversación en la base de datos"""
         
@@ -174,7 +218,6 @@ class SalesAgent:
         has_confirmation = any(keyword in message_lower for keyword in confirmation_keywords)
         
         # Detectar cantidades (números o palabras)
-        import re
         quantities = []
         
         # Buscar números
@@ -256,12 +299,6 @@ class SalesAgent:
             
             print(f"🛒 Pedido creado desde WhatsApp: ID {new_order.id}")
             print(f"📦 Stock descontado automáticamente: -{quantity} unidades")
-            
-           #try:
-           #    from ..utils.notifications import notify_new_order
-           #    await notify_new_order(new_order, product)
-           #except Exception as e:
-           #    print(f"⚠️ Error notificando pedido: {e}")
         
         except Exception as e:
             print(f"❌ Error procesando pedido: {e}")
@@ -282,7 +319,6 @@ class SalesAgent:
         has_edit_intent = any(keyword in message_lower for keyword in edit_keywords)
         
         # Buscar nueva cantidad
-        import re
         quantities = []
         numbers = re.findall(r'\b(\d+)\b', message)
         for num in numbers:
@@ -306,7 +342,6 @@ class SalesAgent:
         db = SessionLocal()
         try:
             # Buscar el pedido más reciente del usuario (últimos 10 minutos)
-            from datetime import timedelta
             recent_time = datetime.utcnow() - timedelta(minutes=10)
             
             recent_order = db.query(models.Order).filter(
@@ -367,17 +402,13 @@ class SalesAgent:
                     "new_total": (product.precio_50_u * new_qty) if product else 0
                 }
                 
-            except HTTPException as http_err:
-                # Capturar específicamente el error 403 del crud
-                if http_err.status_code == 403:
-                    return {
-                        "success": False,
-                        "error": "Ya pasaron los 5 minutos para modificar el pedido",
-                        "error_type": "time_expired_crud",
-                        "order_id": recent_order.id
-                    }
-                else:
-                    raise http_err
+            except Exception as http_err:
+                return {
+                    "success": False,
+                    "error": "Ya pasaron los 5 minutos para modificar el pedido",
+                    "error_type": "time_expired_crud",
+                    "order_id": recent_order.id
+                }
         
         except Exception as e:
             print(f"❌ Error editando pedido: {e}")

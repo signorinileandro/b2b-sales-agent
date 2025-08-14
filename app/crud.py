@@ -43,15 +43,50 @@ def create_order(db: Session, order: schemas.OrderCreate):
 def get_orders(db: Session):
     return db.query(models.Order).all()
 
+
 def update_order(db: Session, order_id: int, new_qty: int):
+    """Actualizar pedido manejando stock correctamente"""
+    
     db_order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not db_order:
         raise HTTPException(status_code=404, detail="Order not found")
+    
+    # Verificar ventana de tiempo
     if datetime.utcnow() - db_order.created_at > timedelta(minutes=5):
-        raise HTTPException(status_code=403, detail="Edit 5 minutes window expired")
+        raise HTTPException(status_code=403, detail="Edit window expired")
+    
+    # Obtener producto
+    product = db.query(models.Product).filter(models.Product.id == db_order.product_id).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    
+    old_qty = db_order.qty
+    
+    # ✅ RESTAURAR stock anterior
+    product.stock += old_qty
+    
+    # ✅ VERIFICAR stock para nueva cantidad
+    if product.stock < new_qty:
+        # Volver al estado anterior
+        product.stock -= old_qty
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Stock insuficiente. Disponible: {product.stock}, Solicitado: {new_qty}"
+        )
+    
+    # ✅ DESCONTAR nuevo stock
+    product.stock -= new_qty
+    
+    # ✅ ACTUALIZAR pedido
     db_order.qty = new_qty
+    
     db.commit()
     db.refresh(db_order)
+    db.refresh(product)
+    
+    print(f"✏️ Pedido {order_id}: {old_qty} → {new_qty} unidades")
+    print(f"📦 Stock actualizado: {product.stock} unidades")
+    
     return db_order
 
 def get_products_with_stock(db: Session):

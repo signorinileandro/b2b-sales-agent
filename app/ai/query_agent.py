@@ -160,10 +160,11 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             # Obtener resultados
             products = query.limit(10).all()
             
-            # Formatear para respuesta
+            # Formatear para respuesta usando schema
             formatted_products = []
             for product in products:
-                formatted_products.append({
+                # ✅ USAR SCHEMA PARA VALIDACIÓN Y FORMATEO
+                product_data = {
                     "id": product.id,
                     "name": product.name,
                     "tipo_prenda": product.tipo_prenda,
@@ -172,8 +173,19 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "precio_50_u": product.precio_50_u,
                     "precio_100_u": product.precio_100_u,
                     "precio_200_u": product.precio_200_u,
-                    "stock": product.stock  
-                })
+                    "stock": product.stock,
+                    "descripcion": product.descripcion or 'Material de calidad premium',
+                    "categoria": product.categoria or 'General'
+                }
+                
+                # Validar con schema
+                try:
+                    validated_product = schemas.ProductAIResponse(**product_data)
+                    formatted_products.append(validated_product.dict())
+                except Exception as e:
+                    print(f"⚠️ Error validando producto {product.id}: {e}")
+                    # Fallback sin validación
+                    formatted_products.append(product_data)
             
             print(f"🔍 Búsqueda ejecutada: {len(formatted_products)} productos encontrados")
             
@@ -365,8 +377,10 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 stock_info.append({
                     "id": product.id,
                     "name": product.name,
-                    "stock": product.stock,  # ✅ CORREGIDO
-                    "precio_50_u": product.precio_50_u
+                    "stock": product.stock,
+                    "precio_50_u": product.precio_50_u,
+                    "descripcion": product.descripcion if product.descripcion else 'Material de calidad premium',
+                    "categoria": product.categoria if product.categoria else 'General'
                 })
                 total_stock += product.stock  # ✅ CORREGIDO
             

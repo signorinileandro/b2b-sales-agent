@@ -9,6 +9,7 @@ from .database import Base, engine, SessionLocal
 from . import crud, schemas, models
 from .ai.sales_agent import sales_agent
 import httpx
+from typing import Set
 
 # Modificar solo el lifespan para producción
 
@@ -126,34 +127,61 @@ async def smart_inventory_search(
                 "color": p.color,
                 "talla": p.talla,
                 "precio_50_u": p.precio_50_u,
-                "stock": p.cantidad_disponible
+                "stock": p.stock
             }
             for p in products
         ]
     }
 
-# Webhook para recibir mensajes de WhatsApp
+# En main.py, AGREGAR al inicio:
+processed_messages: Set[str] = set()
+
+# REEMPLAZAR webhook_whatsapp:
 @app.post("/webhook/whatsapp")
-async def whatsapp_webhook(request: Request):
+async def webhook_whatsapp(request: Request):
     """Webhook para recibir mensajes de WhatsApp"""
     try:
         data = await request.json()
         print(f"📱 Webhook WhatsApp recibido: {data}")
         
-        # Verificar si es un mensaje
-        if "entry" in data:
-            for entry in data["entry"]:
-                if "changes" in entry:
-                    for change in entry["changes"]:
-                        if "value" in change and "messages" in change["value"]:
-                            for message in change["value"]["messages"]:
-                                await process_incoming_whatsapp_message(message)
+        if data.get("object") == "whatsapp_business_account":
+            for entry in data.get("entry", []):
+                for change in entry.get("changes", []):
+                    value = change.get("value", {})
+                    
+                    if "messages" in value and value.get("messages"):
+                        for message in value["messages"]:
+                            message_id = message.get("id")
+                            message_type = message.get("type")
+                            from_number = message.get("from")
+                            
+                            # ✅ DEDUPLICACIÓN
+                            if message_id in processed_messages:
+                                print(f"⏭️ Mensaje {message_id} ya procesado")
+                                continue
+                            
+                            processed_messages.add(message_id)
+                            
+                            # Limpiar cache
+                            if len(processed_messages) > 1000:
+                                processed_messages.clear()
+                            
+                            if message_type == "text" and from_number:
+                                text_body = message.get("text", {}).get("body", "")
+                                print(f"📨 Mensaje de {from_number}: {text_body}")
+                                
+                                normalized_number = normalize_phone_number(from_number)
+                                
+                                try:
+                                    ai_response = await sales_agent.process_message(normalized_number, text_body)
+                                    await send_ai_response_via_n8n(normalized_number, ai_response)
+                                except Exception as e:
+                                    print(f"❌ Error procesando: {e}")
         
-        return {"status": "success"}
-        
+        return {"status": "ok"}
     except Exception as e:
-        print(f"❌ Error procesando webhook WhatsApp: {e}")
-        return {"status": "error", "message": str(e)}
+        print(f"❌ Error webhook: {e}")
+        return {"status": "error"}
 
 @app.get("/webhook/whatsapp")
 async def verify_webhook(request: Request):
@@ -233,7 +261,7 @@ def normalize_phone_number(phone: str) -> str:
     
     # NÚMEROS ARGENTINOS - Formato correcto WhatsApp: 541155744089 (13 dígitos)
     
-    # Caso 1: WhatsApp envía 5491155744089 → corregir a 541155744089
+    # Caso 1: WhatsApp envía 54911155744089 → corregir a 541155744089
     if clean_phone.startswith("5491") and len(clean_phone) == 13:
         # Solo remover el "9" del medio: 5491155744089 → 541155744089
         normalized = "541" + clean_phone[4:]  # "54" + "1" + resto

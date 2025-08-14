@@ -134,17 +134,66 @@ class SalesAgent:
                 if len(products) == 0:
                     return "Lo siento, en este momento no tengo productos que coincidan con tu búsqueda. ¿Te interesa algún otro tipo de prenda?"
                 
-                # Generar respuesta con productos REALES
-                response = "¡Perfecto! Te cuento qué tengo disponible:\n\n"
+                # ✅ RESPUESTA COMPLETA Y PROFESIONAL
+                color_buscado = data.get('filters_applied', {}).get('color', '')
+                tipo_buscado = data.get('filters_applied', {}).get('tipo_prenda', '')
                 
-                for i, product in enumerate(products[:5], 1):  # Mostrar hasta 5 productos
-                    response += f"{i}. **{product['name']}**\n"
-                    response += f"   - Color: {product['color']}\n"
-                    response += f"   - Talla: {product['talla']}\n" 
-                    response += f"   - Stock disponible: {product['stock']} unidades\n"
-                    response += f"   - Precio: ${product['precio_50_u']:,} c/u (50+ unidades)\n\n"
+                header = "¡Perfecto! Te cuento qué tengo disponible"
+                if color_buscado:
+                    header += f" en **{color_buscado.upper()}**"
+                if tipo_buscado:
+                    header += f" en **{tipo_buscado.upper()}S**"
+                header += ":\n\n"
                 
-                response += "¿Alguno te interesa? ¿Para cuántas personas necesitás?"
+                response = header
+                
+                for i, product in enumerate(products[:6], 1):  # Hasta 6 productos
+                    product_id = product.get('id', 'N/A')
+                    descripcion = product.get('descripcion', 'Material de calidad premium')
+                    categoria = product.get('categoria', 'General')
+                    
+                    # Encabezado del producto con ID para diferenciación
+                    response += f"**{i}. {product['name']} (#{product_id})**\n"
+                    
+                    # Info básica
+                    response += f"   🎨 **Color:** {product['color']} | 📏 **Talla:** {product['talla']}\n"
+                    response += f"   📂 **Categoría:** {categoria}\n"
+                    response += f"   📝 **Descripción:** {descripcion}\n"
+                    
+                    # Stock con indicadores visuales
+                    stock = product['stock']
+                    if stock < 50:
+                        stock_indicator = f"⚠️ **{stock} unidades** (¡Últimas disponibles!)"
+                    elif stock < 150:
+                        stock_indicator = f"📦 **{stock} unidades** (Stock limitado)"
+                    else:
+                        stock_indicator = f"✅ **{stock} unidades** (Excelente disponibilidad)"
+                    
+                    response += f"   {stock_indicator}\n"
+                    
+                    # Precios escalonados
+                    response += f"   💰 **Precios por volumen:**\n"
+                    response += f"      • 50+ unidades: **${product['precio_50_u']:,.0f}** c/u\n"
+                    response += f"      • 100+ unidades: **${product['precio_100_u']:,.0f}** c/u (-{((product['precio_50_u'] - product['precio_100_u']) / product['precio_50_u'] * 100):.0f}%)\n"
+                    response += f"      • 200+ unidades: **${product['precio_200_u']:,.0f}** c/u (-{((product['precio_50_u'] - product['precio_200_u']) / product['precio_50_u'] * 100):.0f}%)\n"
+                    
+                    response += "\n" + "─" * 50 + "\n\n"
+                
+                # Resumen final
+                total_stock = sum(p['stock'] for p in products)
+                unique_talles = sorted(set(p['talla'] for p in products))
+                unique_categorias = sorted(set(p.get('categoria', 'General') for p in products))
+                
+                response += f"📊 **RESUMEN GENERAL:**\n"
+                response += f"• **{len(products)} modelos** diferentes disponibles\n"
+                response += f"• **Talles:** {', '.join(unique_talles)}\n"
+                response += f"• **Categorías:** {', '.join(unique_categorias)}\n"
+                response += f"• **Stock total:** {total_stock:,} unidades\n"
+                response += f"• **Rango de precios:** ${min(p['precio_200_u'] for p in products):,.0f} - ${max(p['precio_50_u'] for p in products):,.0f}\n\n"
+                
+                response += "🎯 **¿Qué modelo te interesa más?** ¿Para cuántas personas necesitás?\n"
+                response += "💡 *Recordá que a mayor volumen, mejor precio por unidad*"
+                
                 return response
             
             elif operation == "check_stock" and data.get("products"):

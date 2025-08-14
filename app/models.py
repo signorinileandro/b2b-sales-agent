@@ -16,6 +16,8 @@ class Product(Base):
     precio_200_u = Column(Float)
     stock = Column(Integer)  # Campo principal para stock
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    descripcion = Column(Text, nullable=True)
+    categoria = Column(String, nullable=True)
 
 class Order(Base):
     __tablename__ = "orders"

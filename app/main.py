@@ -10,32 +10,39 @@ from . import crud, schemas, models
 from .ai.sales_agent import sales_agent
 import httpx
 
+# Modificar solo el lifespan para producción
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Maneja el ciclo de vida de la aplicación"""
+    """Maneja el ciclo de vida de la aplicación - RENDER + SUPABASE"""
     
-    print("🚀 Iniciando aplicación...")
+    print("🚀 Iniciando aplicación en Render...")
     
-    # Importar e inicializar base de datos
     try:
-        from .utils.init_database import init_database
-        init_success = init_database()
-        if init_success:
-            print("✅ Base de datos inicializada correctamente")
+        # Crear tablas en Supabase
+        Base.metadata.create_all(bind=engine)
+        print("✅ Tablas verificadas en Supabase")
+        
+        # Verificar si necesita importar productos
+        db = SessionLocal()
+        product_count = db.query(models.Product).count()
+        
+        if product_count == 0:
+            print("📊 Importando productos desde Excel...")
+            from .utils.import_from_excel import import_products_from_excel
+            imported = import_products_from_excel("DB.xlsx")
+            print(f"✅ {imported} productos importados!")
         else:
-            print("❌ Error inicializando base de datos")
+            print(f"📦 Ya hay {product_count} productos en BD")
+            
+        db.close()
+        
     except Exception as e:
-        print(f"❌ Error importando init_database: {e}")
-        # Intentar inicialización básica
-        try:
-            Base.metadata.create_all(bind=engine)
-            print("✅ Tablas creadas con SQLAlchemy")
-        except Exception as e2:
-            print(f"❌ Error creando tablas: {e2}")
+        print(f"❌ Error en inicialización: {e}")
     
-    yield  # La aplicación está corriendo
+    yield
     
-    print("🛑 Cerrando aplicación...")
+    print("🛑 Aplicación cerrada")
 
 app = FastAPI(title="B2B Sales Agent", lifespan=lifespan)
 

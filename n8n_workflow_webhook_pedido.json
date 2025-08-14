@@ -1,0 +1,97 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-order",
+        "options": {}
+      },
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookDescription": "Trigger on new order from FastAPI",
+      "id": "d618b7cb-833c-4d60-9bd0-3975b550d876",
+      "webhookId": "7cc39181-356d-41cc-8994-a6792461441d"
+    },
+    {
+      "parameters": {
+        "keepOnlySet": true,
+        "values": {
+          "string": [
+            {
+              "name": "message_body",
+              "value": "=Nuevo pedido recibido n° {{ $json.body.order_id }}: {{$json.body.buyer}} compró {{$json.body.qty}} unidades del producto {{$json.body.product_name}} (código: {{ $json.body.product_id }})."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Set Message",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [
+        256,
+        0
+      ],
+      "id": "77e2780d-ad21-4854-9c0f-ce8ee8f49745"
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://graph.facebook.com/v17.0/374000592469028/messages",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"541155744089\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": {{ $json.message_body.toJsonString() }}\n  }\n}",
+        "headerParametersJson": "{\n  \"Authorization\": \"Bearer EAAIpUvB7bDIBPFex9FvG5ywPfy5F0Tqj738tfcaUUdjFZBzugvxoqSnlkF0yyFqFSCzvFo9bBnxnZBfSy0LPZB2Io30K2Lho1zwXoR3aqdX7CieUd1XJn1e51bHxFkaZBfhlRiSP7P9wJhJF7yjnmuQ3viTA9I5Cc6vDHQYlDum5qwg8roF9TueELWG4r5NPwXVGrTnsCHpah8Ch9SpuZCpHl5JTuwKuWZAmuSTrnp\"\n}"
+      },
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        512,
+        0
+      ],
+      "id": "8286fdb7-65eb-461e-9bc8-b5e5e369276c"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Set Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Message": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "2a232180-de8a-4b5f-af1f-28c469c9efe3",
+  "meta": {
+    "instanceId": "59aadaf477a6e5f71d801ee5dc2788a9b18ce10bb2f980f4c84e5d0d16ce7187"
+  },
+  "id": "Ia6EcT79gXcfWKQA",
+  "tags": []
+}

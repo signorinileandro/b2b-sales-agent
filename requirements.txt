@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+sqlalchemy
+pandas
+openpyxl
+python-dotenv
+psycopg2-binary
+httpx
+google-generativeai
+fuzzywuzzy
+python-levenshtein

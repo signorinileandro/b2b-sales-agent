@@ -1,0 +1,63 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-ai-response",
+        "options": {}
+      },
+      "name": "Receive AI Response1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "d4d85918-6289-4bfa-9860-3b3374eb424a",
+      "webhookId": "381f09c7-a5a1-46f6-a6a9-8f5efdd78516"
+    },
+    {
+      "parameters": {
+        "requestMethod": "POST",
+        "url": "https://graph.facebook.com/v17.0/374000592469028/messages",
+        "jsonParameters": true,
+        "options": {},
+        "bodyParametersJson": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": 541155744089,\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": {{ $json.body.ai_message.toJsonString() }}\n  }\n}",
+        "headerParametersJson": "={\n  \"Authorization\": \"Bearer {{ $json.body.access_token }}\"\n} "
+      },
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 1,
+      "position": [
+        320,
+        0
+      ],
+      "id": "2aa1e98f-4a7b-4c75-a268-2faec3cb39c9"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Receive AI Response1": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "cebbda49-10b2-4187-8d10-a1f806a31124",
+  "meta": {
+    "instanceId": "1e2f2fc02e30d02697a2093a6c5aa6e8fe77aa6a2145399f044079d25b7de8f4"
+  },
+  "id": "mPniU7sLnHADiUE5",
+  "tags": []
+}

@@ -79,6 +79,7 @@ Analiza el mensaje y responde SOLAMENTE con JSON válido con esta estructura:
 
 EJEMPLOS:
 - "camisetas negras" → intent_type: "search_products", product_filters: {{"tipo_prenda": "camiseta", "color": "negro"}}
+- "tenes pantalones?" → intent_type: "search_products", product_filters: {{"tipo_prenda": "pantalón"}}
 - "200 en talle XL" → intent_type: "confirm_order", quantity: 200, product_filters: {{"talla": "XL"}}, is_continuation: true
 - "confirmo el pedido" → intent_type: "confirm_order"
 - "quiero cambiar a 100" → intent_type: "edit_order", quantity: 100
@@ -143,8 +144,8 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         try:
             product_filters = filters.get("product_filters", {})
             
-            # Construir query dinámico
-            query = db.query(models.Product).filter(models.Product.cantidad_disponible > 0)
+            # ✅ USAR CAMPO CORRECTO: stock
+            query = db.query(models.Product).filter(models.Product.stock > 0)
             
             # Aplicar filtros
             if product_filters.get("tipo_prenda"):
@@ -171,7 +172,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "precio_50_u": product.precio_50_u,
                     "precio_100_u": product.precio_100_u,
                     "precio_200_u": product.precio_200_u,
-                    "stock": product.cantidad_disponible
+                    "stock": product.stock  
                 })
             
             print(f"🔍 Búsqueda ejecutada: {len(formatted_products)} productos encontrados")
@@ -204,7 +205,8 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             quantity = data.get("quantity", 50)
             product_filters = data.get("product_filters", {})
             
-            query = db.query(models.Product).filter(models.Product.cantidad_disponible >= quantity)
+            # ✅ USAR CAMPO CORRECTO: stock
+            query = db.query(models.Product).filter(models.Product.stock >= quantity)
             
             if product_filters.get("tipo_prenda"):
                 query = query.filter(models.Product.tipo_prenda.ilike(f"%{product_filters['tipo_prenda']}%"))
@@ -254,7 +256,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     },
                     "quantity": quantity,
                     "total_price": product.precio_50_u * quantity,
-                    "stock_remaining": product.cantidad_disponible - quantity  # ✅ CORREGIR
+                    "stock_remaining": product.stock - quantity  # ✅ CORREGIDO
                 }
             }
             
@@ -344,7 +346,8 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         try:
             product_filters = data.get("product_filters", {})
             
-            query = db.query(models.Product).filter(models.Product.cantidad_disponible > 0)
+            # ✅ USAR CAMPO CORRECTO: stock
+            query = db.query(models.Product).filter(models.Product.stock > 0)
             
             if product_filters.get("tipo_prenda"):
                 query = query.filter(models.Product.tipo_prenda.ilike(f"%{product_filters['tipo_prenda']}%"))
@@ -362,10 +365,10 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 stock_info.append({
                     "id": product.id,
                     "name": product.name,
-                    "stock": product.cantidad_disponible,
+                    "stock": product.stock,  # ✅ CORREGIDO
                     "precio_50_u": product.precio_50_u
                 })
-                total_stock += product.cantidad_disponible
+                total_stock += product.stock  # ✅ CORREGIDO
             
             return {
                 "operation": "check_stock",

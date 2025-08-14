@@ -5,7 +5,7 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from ..database import SessionLocal
 from .. import models
-from .query_agent import query_agent  # ✅ IMPORTAR QUERY AGENT
+from .query_agent import query_agent  
 
 class SalesAgent:
     def __init__(self):
@@ -64,8 +64,22 @@ class SalesAgent:
         # 3. ✅ EJECUTAR OPERACIÓN EN BASE DE DATOS SI ES NECESARIO
         db_result = None
         if intent['intent_type'] in ['search_products', 'confirm_order', 'edit_order', 'ask_stock']:
-            db_result = await query_agent.execute_database_operation(intent, user_id)
+           
+            if intent['intent_type'] == 'confirm_order':
+                db_result = await query_agent.execute_database_operation(intent, user_id, conversation.id)
+            else:
+                db_result = await query_agent.execute_database_operation(intent, user_id)
+            
             print(f"🗄️ Operación DB: {db_result.get('operation', 'none')} - Éxito: {db_result.get('success', False)}")
+            
+            # ✅ AGREGAR DEBUG MÁS DETALLADO
+            if db_result and db_result.get('success') and db_result.get('data'):
+                products = db_result['data'].get('products', [])
+                print(f"📊 Productos encontrados en BD: {len(products)}")
+                if products:
+                    print(f"🔍 Primer producto: {products[0]}")
+                else:
+                    print(f"⚠️ Lista de productos vacía")
             
             # Actualizar contexto con resultados
             if db_result.get('success') and db_result.get('data'):
@@ -75,6 +89,16 @@ class SalesAgent:
                     context['last_order_created'] = db_result['data']
                 if intent['intent_type'] == 'edit_order':
                     context['last_order_edited'] = db_result['data']
+        
+        # DEBUG - Mostrar resultado de DB si existe
+        if db_result:
+            print(f"🔍 DEBUG - DB Result SUCCESS: {db_result.get('success')}")
+            print(f"🔍 DEBUG - DB Result OPERATION: {db_result.get('operation')}")
+            if db_result.get('data'):
+                data_summary = {k: len(v) if isinstance(v, list) else str(v)[:50] for k, v in db_result['data'].items()}
+                print(f"🔍 DEBUG - DB Result DATA: {data_summary}")
+        else:
+            print(f"🔍 DEBUG - No DB result for intent: {intent['intent_type']}")
         
         # 4. ✅ GENERAR RESPUESTA NATURAL CON SALES AGENT
         sales_response = await self._generate_natural_response(
@@ -99,57 +123,104 @@ class SalesAgent:
     async def _generate_natural_response(self, user_message: str, context: Dict, intent: Dict, db_result: Dict = None) -> str:
         """Genera respuesta natural basada en intención y resultados de DB"""
         
-        # Construir prompt con contexto específico
+        # ✅ VERIFICAR SI HAY DATOS REALES DE LA BD
+        if db_result and db_result.get("success") and db_result.get("data"):
+            data = db_result["data"]
+            operation = db_result["operation"]
+            
+            # ✅ RESPUESTA BASADA EN DATOS REALES
+            if operation == "search_products" and data.get("products"):
+                products = data["products"]
+                if len(products) == 0:
+                    return "Lo siento, en este momento no tengo productos que coincidan con tu búsqueda. ¿Te interesa algún otro tipo de prenda?"
+                
+                # Generar respuesta con productos REALES
+                response = "¡Perfecto! Te cuento qué tengo disponible:\n\n"
+                
+                for i, product in enumerate(products[:5], 1):  # Mostrar hasta 5 productos
+                    response += f"{i}. **{product['name']}**\n"
+                    response += f"   - Color: {product['color']}\n"
+                    response += f"   - Talla: {product['talla']}\n" 
+                    response += f"   - Stock disponible: {product['stock']} unidades\n"
+                    response += f"   - Precio: ${product['precio_50_u']:,} c/u (50+ unidades)\n\n"
+                
+                response += "¿Alguno te interesa? ¿Para cuántas personas necesitás?"
+                return response
+            
+            elif operation == "check_stock" and data.get("products"):
+                products = data["products"]
+                if len(products) == 0:
+                    return "En este momento no tengo pantalones en stock, pero estoy esperando mercadería nueva. ¿Te interesa que te avise cuando llegue?"
+                
+                # Agrupar por talla y color
+                talleres_disponibles = set()
+                colores_disponibles = set()
+                total_stock = 0
+                
+                response = "📋 **PANTALONES DISPONIBLES:**\n\n"
+                
+                for product in products:
+                    talleres_disponibles.add(product.get('talla', 'N/A'))
+                    colores_disponibles.add(product.get('color', 'N/A'))
+                    total_stock += product.get('stock', 0)
+                    
+                    response += f"• {product['name']}\n"
+                    response += f"  Color: {product.get('color', 'N/A')} | Talla: {product.get('talla', 'N/A')}\n"
+                    response += f"  Stock: {product['stock']} unidades | ${product['precio_50_u']:,} c/u\n\n"
+                
+                response += f"📊 **RESUMEN:**\n"
+                response += f"• Talles disponibles: {', '.join(sorted(talleres_disponibles))}\n"
+                response += f"• Colores disponibles: {', '.join(sorted(colores_disponibles))}\n"
+                response += f"• Stock total: {total_stock} unidades\n\n"
+                response += "¿Qué talle y color te interesa?"
+                
+                return response
+            
+            elif operation == "create_order" and data.get("order_id"):
+                order = data
+                return f"¡PEDIDO CONFIRMADO! 🎉\n\n" \
+                       f"✅ **{order['product']['name']}**\n" \
+                       f"📦 Cantidad: {order['quantity']} unidades\n" \
+                       f"💰 Total: ${order['total_price']:,}\n" \
+                       f"📋 ID de pedido: {order['order_id']}\n\n" \
+                       f"Stock restante: {order['stock_remaining']} unidades\n\n" \
+                       f"¿Necesitás algo más para tu empresa?"
+            
+            elif operation == "edit_order" and data.get("order_id"):
+                return f"✅ **PEDIDO ACTUALIZADO**\n\n" \
+                       f"📋 Pedido #{data['order_id']}\n" \
+                       f"📦 Cantidad anterior: {data['old_quantity']}\n" \
+                       f"📦 Nueva cantidad: {data['new_quantity']}\n" \
+                       f"💰 Nuevo total: ${data['new_total_price']:,}\n\n" \
+                       f"¡Cambio realizado exitosamente!"
+        
+        # ✅ SI HAY ERROR EN LA BD, USAR LA INFO DEL ERROR
+        elif db_result and not db_result.get("success"):
+            error_msg = db_result.get("error", "Error desconocido")
+            
+            if "no hay producto" in error_msg.lower():
+                return "No encontré productos que coincidan con lo que buscás. ¿Podrías ser más específico sobre el tipo, color o talla que necesitás?"
+            elif "no hay pedidos recientes" in error_msg.lower():
+                return "No encontré pedidos recientes tuyos para modificar. ¿Querés hacer un nuevo pedido?"
+            elif "ya pasaron" in error_msg.lower():
+                return f"Lo siento, {error_msg}. ¿Querés hacer un nuevo pedido en su lugar?"
+            else:
+                return f"Tuve un problemita técnico: {error_msg}. ¿Podés intentar de nuevo?"
+        
+        # ✅ FALLBACK: USAR GEMINI SOLO PARA CONVERSACIÓN GENERAL
         prompt = f"""
-Eres Ventix, un vendedor B2B argentino experto en textiles con 15 años de experiencia.
+Eres Ventix, un vendedor B2B argentino de textiles con 15 años de experiencia.
 
-SITUACIÓN ACTUAL:
-- Mensaje del cliente: "{user_message}"
-- Intención detectada: {intent['intent_type']}
-- Confianza: {intent['confidence']}
+El cliente dice: "{user_message}"
 
-RESULTADOS DE OPERACIONES:
-{json.dumps(db_result, indent=2, ensure_ascii=False) if db_result else "No se ejecutaron operaciones en BD"}
+IMPORTANTE: NO INVENTES productos, precios ni stock. Solo responde de forma conversacional y ofrece ayuda.
 
-CONTEXTO DE CONVERSACIÓN:
-- Productos vistos: {len(context.get('last_searched_products', []))} productos
-- Historial reciente: {context.get('conversation_history', [])[-2:]}
+Si pregunta por productos específicos, dile que vas a consultarlo en el sistema.
+Si es un saludo o pregunta general, responde de forma amigable y ofrece ayuda.
 
-INSTRUCCIONES SEGÚN INTENCIÓN:
-
-Si intent_type es "search_products" y hay resultados:
-- Presentar productos de forma entusiasta y personalizada
-- Mencionar stock disponible y crear urgencia si es bajo
-- Calcular precios con descuentos por volumen
-- Hacer pregunta de seguimiento sobre cantidad
-
-Si intent_type es "confirm_order" y fue exitoso:
-- ¡EMPEZAR CON "¡PEDIDO CONFIRMADO!" en mayúsculas!
-- Celebrar con entusiasmo
-- Mostrar resumen completo
-- Mencionar stock restante
-- Preguntar si necesita algo más
-
-Si intent_type es "edit_order" y fue exitoso:
-- Confirmar cambio exitoso
-- Mostrar cambio de cantidad y nuevo precio
-- Celebrar la flexibilidad del servicio
-
-Si hubo errores:
-- Ser empático y ofrecer alternativas
-- Explicar limitaciones (tiempo, stock) de forma natural
-- Reconducir hacia solución viable
-
-ESTILO:
-- Natural y cálido, nunca robótico
-- Usar expresiones argentinas: "¡Perfecto!", "Te tengo justo lo que necesitás"
-- Mencionar beneficios: calidad, precio, servicio
-- Crear urgencia sutil si stock es limitado
-- Siempre hacer pregunta de seguimiento
-
-Responde como Ventix respondería naturalmente:
+Mantente en personaje de vendedor experimentado argentino.
 """
-
+        
         try:
             response = await self._make_gemini_request(prompt)
             if response:
@@ -158,8 +229,8 @@ Responde como Ventix respondería naturalmente:
         except Exception as e:
             print(f"❌ Error generando respuesta: {e}")
         
-        # Fallback response
-        return "¡Hola! Estoy teniendo algunos problemas técnicos. ¿Podrías repetir tu consulta? Te ayudo enseguida."
+        # Fallback final
+        return "¡Hóla! Soy Ventix, especialista en textiles. ¿En qué te puedo ayudar hoy?"
     
     async def _make_gemini_request(self, prompt: str) -> str:
         """Hace request a Gemini con rotación de keys"""

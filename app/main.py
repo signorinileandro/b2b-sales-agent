@@ -231,21 +231,35 @@ def normalize_phone_number(phone: str) -> str:
     
     print(f"🔍 Normalizando: {phone} → {clean_phone}")
     
-    # Si es número argentino que empieza con 5491 (formato incorrecto de WhatsApp)
-    if clean_phone.startswith("5491"):
-        # Convertir 5491155744089 → 541155744089
-        normalized = "54" + clean_phone[4:]  # Remover "91" del medio
-        print(f"🇦🇷 Número argentino normalizado: {clean_phone} → {normalized}")
+    # NÚMEROS ARGENTINOS - Formato correcto WhatsApp: 541155744089 (13 dígitos)
+    
+    # Caso 1: WhatsApp envía 5491155744089 → corregir a 541155744089
+    if clean_phone.startswith("5491") and len(clean_phone) == 13:
+        # Solo remover el "9" del medio: 5491155744089 → 541155744089
+        normalized = "541" + clean_phone[4:]  # "54" + "1" + resto
+        print(f"🇦🇷 Número argentino normalizado (remover 9): {clean_phone} → {normalized}")
         return normalized
     
-    # Si empieza con 54911 (otro formato incorrecto)
-    if clean_phone.startswith("54911"):
-        # Convertir 54911155744089 → 541155744089  
-        normalized = "541" + clean_phone[5:]  # Remover "911" y poner "1"
-        print(f"🇦🇷 Número argentino 911 normalizado: {clean_phone} → {normalized}")
+    # Caso 2: Formato con doble 9 y 1: 54911155744089 → 541155744089  
+    if clean_phone.startswith("54911") and len(clean_phone) == 14:
+        # Remover "911" y reemplazar por "1": 54911155744089 → 541155744089
+        normalized = "541" + clean_phone[5:]
+        print(f"🇦🇷 Número argentino normalizado (remover 911): {clean_phone} → {normalized}")
         return normalized
     
-    # Para otros países o formatos correctos, devolver como está
+    # Caso 3: Ya está en formato correcto 541155744089
+    if clean_phone.startswith("541") and len(clean_phone) == 13:
+        print(f"🇦🇷 Número argentino correcto: {clean_phone}")
+        return clean_phone
+    
+    # Caso 4: Formato local 1155744089 → agregar código país
+    if clean_phone.startswith("11") and len(clean_phone) == 10:
+        normalized = "541" + clean_phone
+        print(f"🇦🇷 Número local argentino: {clean_phone} → {normalized}")
+        return normalized
+    
+    # Caso 5: Otros formatos internacionales
+    print(f"🌐 Número internacional sin cambios: {clean_phone}")
     return clean_phone
 
 @app.get("/api/products/by-user/{user_id}")

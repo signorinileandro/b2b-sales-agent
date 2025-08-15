@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from .. import models, crud, schemas
 from datetime import datetime, timedelta
+from sqlalchemy import or_
 
 class QueryAgent:
     """Agente especializado en consultas y operaciones de base de datos"""
@@ -357,98 +358,91 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         else:
             return {"operation": "none", "success": True, "data": None}
     
-async def _search_products(self, filters: Dict) -> Dict:
-    """Busca productos con filtros específicos (mejorada con fallback y búsqueda flexible)"""
-    
-    db = SessionLocal()
-    try:
-        product_filters = filters.get("product_filters", {})
+    async def _search_products(self, filters: Dict) -> Dict:
+        """Busca productos con filtros específicos (mejorada con fallback y búsqueda flexible)"""
         
-        # Base query: solo productos con stock
-        query = db.query(models.Product).filter(models.Product.stock > 0)
-        
-        tipo = product_filters.get("tipo_prenda")
-        color = product_filters.get("color")
-        talla = product_filters.get("talla")
+        db = SessionLocal()
+        try:
+            product_filters = filters.get("product_filters", {})
+            
+            # Base query: solo productos con stock
+            query = db.query(models.Product).filter(models.Product.stock > 0)
+            
+            tipo = product_filters.get("tipo_prenda")
+            color = product_filters.get("color")
+            talla = product_filters.get("talla")
 
-        # Búsqueda más flexible
-        if tipo:
-            tipo_lower = tipo.lower()
-            query = query.filter(
-                or_(
-                    models.Product.tipo_prenda.ilike(f"%{tipo_lower}%"),
-                    models.Product.name.ilike(f"%{tipo_lower}%"),
-                    models.Product.categoria.ilike(f"%{tipo_lower}%")
+            # Búsqueda más flexible
+            if tipo:
+                tipo_lower = tipo.lower()
+                query = query.filter(
+                    models.Product.tipo_prenda.ilike(f"%{tipo_lower}%")
                 )
-            )
-        
-        if color:
-            query = query.filter(models.Product.color.ilike(f"%{color}%"))
-        
-        if talla:
-            query = query.filter(models.Product.talla.ilike(f"%{talla}%"))
-        
-        # Primer intento
-        products = query.limit(10).all()
-
-        # 🔄 Fallback si no hay resultados
-        if not products and tipo:
-            print(f"⚠️ Sin resultados exactos para '{tipo}', buscando relacionados...")
-            fallback_query = db.query(models.Product).filter(models.Product.stock > 0)
             
             if color:
-                fallback_query = fallback_query.filter(models.Product.color.ilike(f"%{color}%"))
+                query = query.filter(models.Product.color.ilike(f"%{color}%"))
+            
             if talla:
-                fallback_query = fallback_query.filter(models.Product.talla.ilike(f"%{talla}%"))
+                query = query.filter(models.Product.talla.ilike(f"%{talla}%"))
+            
+            # Primer intento
+            products = query.limit(10).all()
 
-            # Buscar por nombre o categoría, ignorando tipo_prenda
-            fallback_query = fallback_query.filter(
-                or_(
-                    models.Product.name.ilike(f"%{tipo}%"),
-                    models.Product.categoria.ilike(f"%{tipo}%")
+            # 🔄 Fallback si no hay resultados
+            if not products and tipo:
+                print(f"⚠️ Sin resultados exactos para '{tipo}', buscando relacionados...")
+                fallback_query = db.query(models.Product).filter(models.Product.stock > 0)
+                
+                if color:
+                    fallback_query = fallback_query.filter(models.Product.color.ilike(f"%{color}%"))
+                if talla:
+                    fallback_query = fallback_query.filter(models.Product.talla.ilike(f"%{talla}%"))
+
+                # Buscar por nombre o categoría, ignorando tipo_prenda
+                fallback_query = fallback_query.filter(
+                    models.Product.name.ilike(f"%{tipo}%")
                 )
-            )
-            products = fallback_query.limit(10).all()
-        
-        # Formateo de productos
-        formatted_products = []
-        for product in products:
-            product_data = {
-                "id": product.id,
-                "name": product.name,
-                "tipo_prenda": product.tipo_prenda,
-                "color": product.color,
-                "talla": product.talla,
-                "precio_50_u": product.precio_50_u,
-                "precio_100_u": product.precio_100_u,
-                "precio_200_u": product.precio_200_u,
-                "stock": product.stock,
-                "descripcion": product.descripcion or 'Material de calidad premium',
-                "categoria": product.categoria or 'General'
-            }
-            formatted_products.append(product_data)
+                products = fallback_query.limit(10).all()
+            
+            # Formateo de productos
+            formatted_products = []
+            for product in products:
+                product_data = {
+                    "id": product.id,
+                    "name": product.name,
+                    "tipo_prenda": product.tipo_prenda,
+                    "color": product.color,
+                    "talla": product.talla,
+                    "precio_50_u": product.precio_50_u,
+                    "precio_100_u": product.precio_100_u,
+                    "precio_200_u": product.precio_200_u,
+                    "stock": product.stock,
+                    "descripcion": product.descripcion or 'Material de calidad premium',
+                    "categoria": product.categoria or 'General'
+                }
+                formatted_products.append(product_data)
 
-        print(f"🔍 Búsqueda ejecutada (final): {len(formatted_products)} productos encontrados")
-        
-        return {
-            "operation": "search_products",
-            "success": True,
-            "data": {
-                "products": formatted_products,
-                "filters_applied": product_filters,
-                "total_found": len(formatted_products)
+            print(f"🔍 Búsqueda ejecutada (final): {len(formatted_products)} productos encontrados")
+            
+            return {
+                "operation": "search_products",
+                "success": True,
+                "data": {
+                    "products": formatted_products,
+                    "filters_applied": product_filters,
+                    "total_found": len(formatted_products)
+                }
             }
-        }
-        
-    except Exception as e:
-        print(f"❌ Error en búsqueda: {e}")
-        return {
-            "operation": "search_products", 
-            "success": False, 
-            "error": str(e)
-        }
-    finally:
-        db.close()
+            
+        except Exception as e:
+            print(f"❌ Error en búsqueda: {e}")
+            return {
+                "operation": "search_products", 
+                "success": False, 
+                "error": str(e)
+            }
+        finally:
+            db.close()
     
     async def _create_order(self, data: Dict, user_phone: str, conversation_id: int = None) -> Dict:
         """Crea pedido con descuento automático de stock"""

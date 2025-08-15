@@ -12,6 +12,7 @@ from .stock_agent import stock_agent
 from .order_agent import order_agent
 from .modify_agent import modify_agent
 from .sales_agent import sales_agent
+from ..utils import log
 
 # Cargar variables de entorno
 load_dotenv()
@@ -30,8 +31,8 @@ class ConversationManager:
         
         # Configurar Gemini con la primera key válida
         self._configure_gemini()
-        
-        print(f"🔑 ConversationManager inicializado con {len(self.api_keys)} API keys")
+
+        log(f"🔑 ConversationManager inicializado con {len(self.api_keys)} API keys")
 
     
     def _load_api_keys(self) -> List[str]:
@@ -43,13 +44,13 @@ class ConversationManager:
             key = os.getenv(f"GOOGLE_API_KEY_{i}")
             if key:
                 api_keys.append(key)
-                print(f"🔑 API Key #{i} cargada: {key[:10]}...")
+                log(f"🔑 API Key #{i} cargada: {key[:10]}...")
         
         # También buscar la key genérica por compatibilidad
         generic_key = os.getenv("GEMINI_API_KEY")
         if generic_key and generic_key not in api_keys:
             api_keys.append(generic_key)
-            print(f"🔑 API Key genérica cargada: {generic_key[:10]}...")
+            log(f"🔑 API Key genérica cargada: {generic_key[:10]}...")
         
         return api_keys
     
@@ -58,13 +59,13 @@ class ConversationManager:
         current_key = self.api_keys[self.current_key_index]
         genai.configure(api_key=current_key)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        print(f"🔧 Gemini configurado con API key #{self.current_key_index + 1}")
+        log(f"🔧 Gemini configurado con API key #{self.current_key_index + 1}")
     
     def _switch_to_next_key(self):
         """Cambia a la siguiente API key disponible"""
         self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
         self._configure_gemini()
-        print(f"🔄 Cambiado a API key #{self.current_key_index + 1}")
+        log(f"🔄 Cambiado a API key #{self.current_key_index + 1}")
     
     async def _make_gemini_request_with_fallback(self, prompt: str, **kwargs):
         """Hace petición a Gemini con fallback automático entre API keys"""
@@ -75,14 +76,14 @@ class ConversationManager:
         while retry_count < max_retries:
             try:
                 current_key_num = self.current_key_index + 1
-                print(f"🔍 Query Agent usando API Key #{current_key_num}")
+                log(f"🔍 Query Agent usando API Key #{current_key_num}")
                 
                 # Verificar si esta key tiene delay de retry
                 key_id = f"key_{self.current_key_index}"
                 if key_id in self.key_retry_delays:
                     retry_time = self.key_retry_delays[key_id]
                     if time.time() < retry_time:
-                        print(f"⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
+                        log(f"⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
                         self._switch_to_next_key()
                         retry_count += 1
                         continue
@@ -99,11 +100,11 @@ class ConversationManager:
                 
             except Exception as e:
                 error_str = str(e).lower()
-                print(f"❌ Error con API key #{current_key_num}: {e}")
+                log(f"❌ Error con API key #{current_key_num}: {e}")
                 
                 # Verificar si es error de cuota
                 if "quota" in error_str or "exceeded" in error_str or "429" in error_str:
-                    print(f"🚫 API Key #{current_key_num} agotó su cuota")
+                    log(f"🚫 API Key #{current_key_num} agotó su cuota")
                     
                     # Poner esta key en cooldown por 1 hora
                     self.key_retry_delays[key_id] = time.time() + 3600
@@ -114,7 +115,7 @@ class ConversationManager:
                     continue
                     
                 elif "rate limit" in error_str or "rate_limit" in error_str:
-                    print(f"⏳ API Key #{current_key_num} tiene rate limiting")
+                    log(f"⏳ API Key #{current_key_num} tiene rate limiting")
                     
                     # Cooldown más corto para rate limiting (5 minutos)
                     self.key_retry_delays[key_id] = time.time() + 300
@@ -126,7 +127,7 @@ class ConversationManager:
                     
                 else:
                     # Error no relacionado con cuota, intentar una vez más con la siguiente key
-                    print(f"🔄 Error general, intentando con siguiente key")
+                    log(f"🔄 Error general, intentando con siguiente key")
                     self._switch_to_next_key()
                     retry_count += 1
                     continue
@@ -137,7 +138,7 @@ class ConversationManager:
     async def process_message(self, phone: str, message: str) -> str:
         """Punto de entrada principal para procesar mensajes"""
         try:
-            print(f"🤖 ConversationManager procesando: {phone} - {message}")
+            log(f"🤖 ConversationManager procesando: {phone} - {message}")
             
             # 1. Obtener conversación completa
             conversation = await self.get_full_conversation(phone)
@@ -163,7 +164,7 @@ class ConversationManager:
             return response
             
         except Exception as e:
-            print(f"❌ Error en ConversationManager: {e}")
+            log(f"❌ Error en ConversationManager: {e}")
             return "Disculpa, tuve un problema técnico. ¿Podrías repetir tu consulta?"
     
     async def get_full_conversation(self, phone: str) -> Dict:
@@ -174,7 +175,7 @@ class ConversationManager:
             cached_conversation = self.memory_cache[phone]
             # Si el cache es reciente (menos de 10 minutos), usarlo
             if (datetime.now() - cached_conversation.get('last_updated', datetime.now())).seconds < 600:
-                print(f"💾 Usando conversación en memoria para {phone}")
+                log(f"💾 Usando conversación en memoria para {phone}")
                 return cached_conversation
         
         # Obtener de base de datos
@@ -242,12 +243,12 @@ class ConversationManager:
             # Guardar en cache de memoria
             self.memory_cache[phone] = conversation
             
-            print(f"📚 Conversación cargada para {phone}: {len(conversation['messages'])} mensajes, {len(recent_orders)} pedidos")
+            log(f"📚 Conversación cargada para {phone}: {len(conversation['messages'])} mensajes, {len(recent_orders)} pedidos")
             
             return conversation
             
         except Exception as e:
-            print(f"❌ Error obteniendo conversación: {e}")
+            log(f"❌ Error obteniendo conversación: {e}")
             return {
                 'phone': phone,
                 'conversation_id': None,
@@ -314,13 +315,13 @@ class ConversationManager:
                 "method": "gemini" if "Fallback" not in reasoning else "fallback"
             }
             
-            print(f"🎯 Intención detectada: {intent} (confianza: {confidence:.1f})")
-            print(f"🧠 Reasoning: {reasoning}")
+            log(f"🎯 Intención detectada: {intent} (confianza: {confidence:.1f})")
+            log(f"🧠 Reasoning: {reasoning}")
             
             return result
             
         except Exception as e:
-            print(f"❌ Error analizando intención: {e}")
+            log(f"❌ Error analizando intención: {e}")
             fallback_result = self._analyze_intent_fallback_with_reasoning(message, conversation)
             fallback_result["reasoning"] = f"Error en Gemini: {str(e)}. {fallback_result['reasoning']}"
             return fallback_result
@@ -360,14 +361,13 @@ Analiza la intención y responde SOLO con JSON válido:
 INTENCIONES DISPONIBLES:
 
 check_stock - Si pregunta por:
-- Stock disponible, inventario, cantidades
-- Colores, talles, tipos de productos  
-- "¿qué tenés?", "cuánto stock?", "qué colores hay?"
+- Stock, inventario, cantidades, colores, talles, tipos de productos.
+- "¿qué tenés?", "cuánto stock?", "qué colores hay?".
+- ✅ **IMPORTANTE: Si dice "quiero comprar [producto]" SIN cantidad, es check_stock para iniciar la venta.**
 
 create_order - Si quiere hacer pedido:
-- "quiero X unidades", "haceme el pedido", "necesito comprar"
-- Especifica cantidad + producto
-- "generame el pedido", "confirmar pedido"
+- "quiero X unidades", "necesito 50 de...", "haceme el pedido por 80".
+- ✅ **IMPORTANTE: Debe especificar una CANTIDAD NUMÉRICA para ser create_order.**
 
 modify_order - Si quiere cambiar pedido existente:
 - "cambiar cantidad", "modificar pedido", "cancelar"
@@ -382,16 +382,16 @@ general_chat - Para saludos, charla general:
 - Conversación social
 
 IMPORTANTE: 
-- Considera el CONTEXTO completo, no solo el último mensaje
-- Si después de mostrar productos dice "quiero X cantidad" = create_order
-- Si pregunta por stock específico después de ver productos = check_stock
-- En "reasoning" explica claramente por qué elegiste esa intención
-- Sé específico sobre qué palabras clave o contexto influyó en tu decisión
+- La diferencia clave entre check_stock y create_order es la **presencia de una cantidad**.
+- "Quiero pantalones" -> check_stock.
+- "Quiero 50 pantalones" -> create_order.
+- En "reasoning" explica claramente por qué elegiste esa intención.
+- Sé específico sobre qué palabras clave o contexto influyó en tu decisión.
 
 Ejemplo de respuesta:
 {{
     "intent": "check_stock",
-    "reasoning": "El usuario pregunta 'qué colores tenés' lo cual es una consulta específica sobre variantes disponibles en inventario. La palabra 'tenés' indica consulta de disponibilidad.",
+    "reasoning": "El usuario dice 'quiero comprar pantalones'. Aunque usa 'comprar', no especifica cantidad, por lo que la intención es iniciar una consulta de venta, que corresponde a check_stock.",
     "confidence": 0.9
 }}"""
 
@@ -407,11 +407,14 @@ Ejemplo de respuesta:
                                   if msg.get('role') == 'assistant')
         
         # Palabras clave más específicas
-        stock_keywords = ['stock', 'cuanto', 'cuánto', 'tenés', 'disponible', 'colores', 'talles', 'qué hay']
+        stock_keywords = ['stock', 'cuanto', 'cuánto', 'tenés', 'disponible', 'colores', 'talles', 'qué hay', 'mostrar', 'ver']
         order_keywords = ['pedido', 'quiero', 'necesito', 'comprar', 'encargar', 'haceme']
         modify_keywords = ['cambiar', 'modificar', 'cancelar', 'editar']
         advice_keywords = ['recomendás', 'conviene', 'mejor', 'qué', 'para qué']
         
+        # ✅ LÓGICA MEJORADA: create_order solo si hay número
+        has_number = any(char.isdigit() for char in message)
+
         # Detectar con prioridad contextual y generar reasoning
         if any(word in message_lower for word in modify_keywords) and conversation.get('recent_orders'):
             matched_words = [word for word in modify_keywords if word in message_lower]
@@ -420,19 +423,19 @@ Ejemplo de respuesta:
                 "reasoning": f"Palabras clave de modificación detectadas: {matched_words}. Usuario tiene pedidos recientes ({len(conversation.get('recent_orders', []))}) que puede modificar.",
                 "confidence": 0.8
             }
-        elif any(word in message_lower for word in order_keywords):
+        elif any(word in message_lower for word in order_keywords) and has_number: # ✅ AÑADIR CONDICIÓN
             matched_words = [word for word in order_keywords if word in message_lower]
             return {
                 "intent": "create_order", 
-                "reasoning": f"Palabras clave de pedido detectadas: {matched_words}. Indica intención de compra/crear pedido.",
-                "confidence": 0.8
+                "reasoning": f"Palabras clave de pedido ({matched_words}) y una cantidad numérica detectadas. Indica intención de compra/crear pedido.",
+                "confidence": 0.9
             }
-        elif any(word in message_lower for word in stock_keywords):
+        elif any(word in message_lower for word in stock_keywords) or (any(word in message_lower for word in order_keywords) and not has_number): # ✅ AÑADIR LÓGICA
             matched_words = [word for word in stock_keywords if word in message_lower]
             context_info = " Con contexto de productos mostrados." if context_has_products else ""
             return {
                 "intent": "check_stock",
-                "reasoning": f"Palabras clave de consulta de stock: {matched_words}.{context_info} Indica búsqueda de información de inventario.",
+                "reasoning": f"Palabras clave de consulta de stock ({matched_words}) o intención de compra sin cantidad. Indica búsqueda de información de inventario.{context_info}",
                 "confidence": 0.8
             }
         elif any(word in message_lower for word in advice_keywords):
@@ -453,7 +456,7 @@ Ejemplo de respuesta:
         """Deriva al agente especializado según la intención"""
         
         try:
-            print(f"🔀 Derivando a agente: {intent}")
+            log(f"🔀 Derivando a agente: {intent}")
             
             if intent == 'check_stock':
                 # ✅ USAR STOCK AGENT REAL
@@ -475,13 +478,13 @@ Ejemplo de respuesta:
                 return await self.handle_general_chat_temp(message, conversation)
                 
         except Exception as e:
-            print(f"❌ Error en dispatch: {e}")
+            log(f"❌ Error en dispatch: {e}")
             return "Disculpa, tuve un problema procesando tu consulta. ¿Podrías intentar de nuevo?"
     
     async def handle_general_chat_temp(self, message: str, conversation: Dict) -> str:
         """Manejo temporal de charla general"""
-        current_key_num = self.current_key_index + 1
-        return f"¡Hola! Soy Ventix, tu asistente de ventas textiles. ¿En qué puedo ayudarte hoy?\n\n⚙️ Sistema activo con API Key #{current_key_num}\n\n🎯 Puedo mostrarte productos, consultar stock o ayudarte a hacer pedidos."
+        # ✅ ELIMINAR LA INFO DE LA API KEY
+        return f"¡Hola! Soy Ventix, tu asistente de ventas textiles. ¿En qué puedo ayudarte hoy?\n\n🎯 Puedo mostrarte nuestro catálogo, consultar stock o ayudarte a hacer un pedido."
     
     async def update_conversation(self, phone: str, user_message: str, bot_response: str, intent: str, reasoning: str = None):  # ✅ NUEVO parámetro
         """Actualiza la conversación en BD y memoria"""
@@ -544,10 +547,10 @@ Ejemplo de respuesta:
                 ])
                 self.memory_cache[phone]['last_updated'] = datetime.now()
             
-            print(f"💾 Conversación actualizada para {phone}")
+            log(f"💾 Conversación actualizada para {phone}")
             
         except Exception as e:
-            print(f"❌ Error actualizando conversación: {e}")
+            log(f"❌ Error actualizando conversación: {e}")
             db.rollback()
         finally:
             db.close()

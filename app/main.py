@@ -8,6 +8,7 @@ from sqlalchemy.exc import OperationalError
 from .database import Base, engine, SessionLocal
 from . import crud, schemas, models
 from .ai.conversation_manager import conversation_manager
+from .utils.logger import log  # ✅ IMPORTAR
 import httpx
 from typing import Set
 
@@ -17,33 +18,33 @@ from typing import Set
 async def lifespan(app: FastAPI):
     """Maneja el ciclo de vida de la aplicación - RENDER + SUPABASE"""
     
-    print("🚀 Iniciando aplicación en Render...")
+    log("🚀 Iniciando aplicación en Render...") # ✅ USAR LOG
     
     try:
         # Crear tablas en Supabase
         Base.metadata.create_all(bind=engine)
-        print("✅ Tablas verificadas en Supabase")
+        log("✅ Tablas verificadas en Supabase") # ✅ USAR LOG
         
         # Verificar si necesita importar productos
         db = SessionLocal()
         product_count = db.query(models.Product).count()
         
         if product_count == 0:
-            print("📊 Importando productos desde Excel...")
+            log("📊 Importando productos desde Excel...") # ✅ USAR LOG
             from .utils.import_from_excel import import_products_from_excel
             imported = import_products_from_excel("DB.xlsx")
-            print(f"✅ {imported} productos importados!")
+            log(f"✅ {imported} productos importados!") # ✅ USAR LOG
         else:
-            print(f"📦 Ya hay {product_count} productos en BD")
+            log(f"📦 Ya hay {product_count} productos en BD") # ✅ USAR LOG
             
         db.close()
         
     except Exception as e:
-        print(f"❌ Error en inicialización: {e}")
+        log(f"❌ Error en inicialización: {e}") # ✅ USAR LOG
     
     yield
     
-    print("🛑 Aplicación cerrada")
+    log("🛑 Aplicación cerrada") # ✅ USAR LOG
 
 app = FastAPI(title="B2B Sales Agent", lifespan=lifespan)
 
@@ -142,7 +143,7 @@ async def webhook_whatsapp(request: Request):
     """Webhook para recibir mensajes de WhatsApp"""
     try:
         data = await request.json()
-        print(f"📱 Webhook WhatsApp recibido: {data}")
+        log(f"📱 Webhook WhatsApp recibido: {data}")  # ✅ USAR LOG
         
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
@@ -157,7 +158,7 @@ async def webhook_whatsapp(request: Request):
                             
                             # ✅ DEDUPLICACIÓN
                             if message_id in processed_messages:
-                                print(f"⏭️ Mensaje {message_id} ya procesado")
+                                log(f"⏭️ Mensaje {message_id} ya procesado")  # ✅ USAR LOG
                                 continue
                             
                             processed_messages.add(message_id)
@@ -168,7 +169,7 @@ async def webhook_whatsapp(request: Request):
                             
                             if message_type == "text" and from_number:
                                 text_body = message.get("text", {}).get("body", "")
-                                print(f"📨 Mensaje de {from_number}: {text_body}")
+                                log(f"📨 Mensaje de {from_number}: {text_body}")  # ✅ USAR LOG
                                 
                                 normalized_number = normalize_phone_number(from_number)
                                 
@@ -177,11 +178,11 @@ async def webhook_whatsapp(request: Request):
                                     ai_response = await conversation_manager.process_message(normalized_number, text_body)
                                     await send_ai_response_via_n8n(normalized_number, ai_response)
                                 except Exception as e:
-                                    print(f"❌ Error procesando: {e}")
+                                    log(f"❌ Error procesando: {e}")  # ✅ USAR LOG
         
         return {"status": "ok"}
     except Exception as e:
-        print(f"❌ Error webhook: {e}")
+        log(f"❌ Error webhook: {e}")  # ✅ USAR LOG
         return {"status": "error"}
 
 @app.get("/webhook/whatsapp")
@@ -194,14 +195,14 @@ async def verify_webhook(request: Request):
     
     VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN")
     
-    print(f"🔍 Verificación webhook: mode={mode}, token={token}, challenge={challenge}")
-    print(f"🔑 Token esperado: {VERIFY_TOKEN}")
+    log(f"🔍 Verificación webhook: mode={mode}, token={token}, challenge={challenge}")  # ✅ USAR LOG
+    log(f"🔑 Token esperado: {VERIFY_TOKEN}")  # ✅ USAR LOG
     
     if mode == "subscribe" and token == VERIFY_TOKEN:
-        print("✅ Webhook verificado correctamente")
+        log("✅ Webhook verificado correctamente")  # ✅ USAR LOG
         return int(challenge)
     else:
-        print("❌ Token de verificación incorrecto")
+        log("❌ Token de verificación incorrecto")  # ✅ USAR LOG
         raise HTTPException(status_code=403, detail="Forbidden")
 
 async def process_incoming_whatsapp_message(message: dict):
@@ -211,7 +212,7 @@ async def process_incoming_whatsapp_message(message: dict):
     message_text = message.get("text", {}).get("body", "")
     message_type = message["type"]
     
-    print(f"📨 Mensaje de {user_phone}: {message_text}")
+    log(f"📨 Mensaje de {user_phone}: {message_text}")  # ✅ USAR LOG
     
     if message_type == "text" and message_text:
         # ✅ USAR CONVERSATION_MANAGER
@@ -233,9 +234,9 @@ async def send_ai_response_via_n8n(phone: str, ai_message: str):
     
     webhook_url = os.getenv("N8N_AI_RESPONSE_URL", "http://n8n:5678/webhook-test/whatsapp-ai-response")
     
-    print(f"📞 Número original: {phone}")
-    print(f"📞 Número normalizado: {normalized_phone}")
-    print(f"🔍 Enviando respuesta IA a: {webhook_url}")
+    log(f"📞 Número original: {phone}")  # ✅ USAR LOG
+    log(f"📞 Número normalizado: {normalized_phone}")  # ✅ USAR LOG
+    log(f"🔍 Enviando respuesta IA a: {webhook_url}")  # ✅ USAR LOG
     
     try:
         async with httpx.AsyncClient() as client:
@@ -244,13 +245,13 @@ async def send_ai_response_via_n8n(phone: str, ai_message: str):
                 json=webhook_data,
                 timeout=10.0
             )
-            print(f"✅ Respuesta AI enviada vía n8n: {response.status_code}")
+            log(f"✅ Respuesta AI enviada vía n8n: {response.status_code}")  # ✅ USAR LOG
             
             if response.status_code != 200:
-                print(f"❌ Error response: {response.status_code} - {response.text}")
+                log(f"❌ Error response: {response.status_code} - {response.text}")  # ✅ USAR LOG
                 
     except Exception as e:
-        print(f"❌ Error enviando respuesta AI: {type(e).__name__}: {e}")
+        log(f"❌ Error enviando respuesta AI: {type(e).__name__}: {e}")  # ✅ USAR LOG
 
 def normalize_phone_number(phone: str) -> str:
     """Normaliza números de teléfono argentinos para WhatsApp"""
@@ -258,7 +259,7 @@ def normalize_phone_number(phone: str) -> str:
     # Remover espacios, guiones y signos +
     clean_phone = phone.replace("+", "").replace("-", "").replace(" ", "")
     
-    print(f"🔍 Normalizando: {phone} → {clean_phone}")
+    log(f"🔍 Normalizando: {phone} → {clean_phone}")  # ✅ USAR LOG
     
     # NÚMEROS ARGENTINOS - Formato correcto WhatsApp: 541155744089 (13 dígitos)
     
@@ -266,29 +267,29 @@ def normalize_phone_number(phone: str) -> str:
     if clean_phone.startswith("5491") and len(clean_phone) == 13:
         # Solo remover el "9" del medio: 5491155744089 → 541155744089
         normalized = "541" + clean_phone[4:]  # "54" + "1" + resto
-        print(f"🇦🇷 Número argentino normalizado (remover 9): {clean_phone} → {normalized}")
+        log(f"🇦🇷 Número argentino normalizado (remover 9): {clean_phone} → {normalized}")  # ✅ USAR LOG
         return normalized
     
     # Caso 2: Formato con doble 9 y 1: 54911155744089 → 541155744089  
     if clean_phone.startswith("54911") and len(clean_phone) == 14:
         # Remover "911" y reemplazar por "1": 54911155744089 → 541155744089
         normalized = "541" + clean_phone[5:]
-        print(f"🇦🇷 Número argentino normalizado (remover 911): {clean_phone} → {normalized}")
+        log(f"🇦🇷 Número argentino normalizado (remover 911): {clean_phone} → {normalized}")  # ✅ USAR LOG
         return normalized
     
     # Caso 3: Ya está en formato correcto 541155744089
     if clean_phone.startswith("541") and len(clean_phone) == 13:
-        print(f"🇦🇷 Número argentino correcto: {clean_phone}")
+        log(f"🇦🇷 Número argentino correcto: {clean_phone}")  # ✅ USAR LOG
         return clean_phone
     
     # Caso 4: Formato local 1155744089 → agregar código país
     if clean_phone.startswith("11") and len(clean_phone) == 10:
         normalized = "541" + clean_phone
-        print(f"🇦🇷 Número local argentino: {clean_phone} → {normalized}")
+        log(f"🇦🇷 Número local argentino: {clean_phone} → {normalized}")  # ✅ USAR LOG
         return normalized
     
     # Caso 5: Otros formatos internacionales
-    print(f"🌐 Número internacional sin cambios: {clean_phone}")
+    log(f"🌐 Número internacional sin cambios: {clean_phone}")  # ✅ USAR LOG
     return clean_phone
 
 @app.get("/api/products/by-user/{user_id}")

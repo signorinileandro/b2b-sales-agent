@@ -8,6 +8,7 @@ import json
 import os
 from dotenv import load_dotenv
 import time
+from ..utils import log
 
 # Cargar variables de entorno
 load_dotenv()
@@ -27,7 +28,7 @@ class StockAgent:
         # Configurar Gemini con la primera key válida
         self._configure_gemini()
         
-        print(f"📦 StockAgent inicializado con {len(self.api_keys)} API keys")
+        log(f"📦 StockAgent inicializado con {len(self.api_keys)} API keys")
     
     def _load_api_keys(self) -> List[str]:
         """Carga todas las API keys disponibles desde el .env"""
@@ -51,13 +52,13 @@ class StockAgent:
         current_key = self.api_keys[self.current_key_index]
         genai.configure(api_key=current_key)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        print(f"📦 StockAgent configurado con API key #{self.current_key_index + 1}")
+        log(f"📦 StockAgent configurado con API key #{self.current_key_index + 1}")
     
     def _switch_to_next_key(self):
         """Cambia a la siguiente API key disponible"""
         self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
         self._configure_gemini()
-        print(f"📦🔄 StockAgent cambiado a API key #{self.current_key_index + 1}")
+        log(f"📦🔄 StockAgent cambiado a API key #{self.current_key_index + 1}")
     
     async def _make_gemini_request_with_fallback(self, prompt: str, **kwargs):
         """Hace petición a Gemini con fallback automático entre API keys"""
@@ -68,14 +69,14 @@ class StockAgent:
         while retry_count < max_retries:
             try:
                 current_key_num = self.current_key_index + 1
-                print(f"📦🔍 StockAgent usando API Key #{current_key_num}")
+                log(f"📦🔍 StockAgent usando API Key #{current_key_num}")
                 
                 # Verificar si esta key tiene delay de retry
                 key_id = f"stock_key_{self.current_key_index}"
                 if key_id in self.key_retry_delays:
                     retry_time = self.key_retry_delays[key_id]
                     if time.time() < retry_time:
-                        print(f"📦⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
+                        log(f"📦⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
                         self._switch_to_next_key()
                         retry_count += 1
                         continue
@@ -92,11 +93,11 @@ class StockAgent:
                 
             except Exception as e:
                 error_str = str(e).lower()
-                print(f"📦❌ Error con API key #{current_key_num}: {e}")
+                log(f"📦❌ Error con API key #{current_key_num}: {e}")
                 
                 # Verificar si es error de cuota
                 if "quota" in error_str or "exceeded" in error_str or "429" in error_str:
-                    print(f"📦🚫 API Key #{current_key_num} agotó su cuota")
+                    log(f"📦🚫 API Key #{current_key_num} agotó su cuota")
                     
                     # Poner esta key en cooldown por 1 hora
                     self.key_retry_delays[key_id] = time.time() + 3600
@@ -107,7 +108,7 @@ class StockAgent:
                     continue
                     
                 elif "rate limit" in error_str or "rate_limit" in error_str:
-                    print(f"📦⏳ API Key #{current_key_num} tiene rate limiting")
+                    log(f"📦⏳ API Key #{current_key_num} tiene rate limiting")
                     
                     # Cooldown más corto para rate limiting (5 minutos)
                     self.key_retry_delays[key_id] = time.time() + 300
@@ -119,7 +120,7 @@ class StockAgent:
                     
                 else:
                     # Error no relacionado con cuota, intentar una vez más con la siguiente key
-                    print(f"📦🔄 Error general, intentando con siguiente key")
+                    log(f"📦🔄 Error general, intentando con siguiente key")
                     self._switch_to_next_key()
                     retry_count += 1
                     continue
@@ -131,7 +132,7 @@ class StockAgent:
         """Maneja consultas de stock con análisis inteligente del mensaje"""
         
         try:
-            print(f"📦 StockAgent procesando: {message}")
+            log(f"📦 StockAgent procesando: {message}")
             
             # 1. Analizar qué busca específicamente el usuario
             stock_query = await self._analyze_stock_query(message, conversation)
@@ -145,7 +146,7 @@ class StockAgent:
             return response
             
         except Exception as e:
-            print(f"📦❌ Error en StockAgent: {e}")
+            log(f"📦❌ Error en StockAgent: {e}")
             return "Disculpa, tuve un problema consultando el inventario. ¿Podrías intentar de nuevo?"
     
     async def _analyze_stock_query(self, message: str, conversation: Dict) -> Dict:
@@ -202,12 +203,12 @@ EJEMPLOS:
                 response_clean = response_clean[3:-3]
             
             parsed_query = json.loads(response_clean)
-            print(f"📦🎯 Query analizada: {parsed_query}")
+            log(f"📦🎯 Query analizada: {parsed_query}")
             
             return parsed_query
             
         except Exception as e:
-            print(f"📦❌ Error analizando query: {e}")
+            log(f"📦❌ Error analizando query: {e}")
             
             # Fallback basado en palabras clave
             message_lower = message.lower()
@@ -322,12 +323,12 @@ EJEMPLOS:
             stock_data["unique_sizes"] = sorted(list(stock_data["unique_sizes"]))
             stock_data["unique_types"] = sorted(list(stock_data["unique_types"]))
             
-            print(f"📦📊 Stock data obtenida: {len(products)} productos, stock total: {stock_data['total_stock']}")
+            log(f"📦📊 Stock data obtenida: {len(products)} productos, stock total: {stock_data['total_stock']}")
             
             return stock_data
             
         except Exception as e:
-            print(f"📦❌ Error obteniendo stock data: {e}")
+            log(f"📦❌ Error obteniendo stock data: {e}")
             return {
                 "products": [],
                 "summary": {},

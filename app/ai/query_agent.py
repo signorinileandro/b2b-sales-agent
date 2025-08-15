@@ -7,6 +7,7 @@ from ..database import SessionLocal
 from .. import models, crud, schemas
 from datetime import datetime, timedelta
 from sqlalchemy import or_
+from ..utils import log
 
 class QueryAgent:
     """Agente especializado en consultas y operaciones de base de datos"""
@@ -37,7 +38,7 @@ class QueryAgent:
                 current_key = self.api_keys[self.current_key_index]
                 genai.configure(api_key=current_key)
                 self.model = genai.GenerativeModel('gemini-1.5-flash')
-                print(f"🔍 Query Agent usando API Key #{self.current_key_index + 1}")
+                log(f"🔍 Query Agent usando API Key #{self.current_key_index + 1}")
                 return True
             except:
                 return False
@@ -99,7 +100,7 @@ class QueryAgent:
                 original_term = original
                 mapped_term = mapped
                 user_message_mapped = user_message_mapped.replace(original, mapped)
-                print(f"🔄 Mapeo aplicado: '{original}' → '{mapped}'")
+                log(f"🔄 Mapeo aplicado: '{original}' → '{mapped}'")
                 break
         
         extraction_prompt = f"""
@@ -217,7 +218,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 return parsed_intent
                 
         except Exception as e:
-            print(f"❌ Error extrayendo intención: {e}")
+            log(f"❌ Error extrayendo intención: {e}")
         
         # ✅ FALLBACK MEJORADO CON TODOS LOS MAPEOS
         user_lower = user_message.lower()
@@ -377,7 +378,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     filters["talla"] = talla
                     break
             
-            print(f"🎯 CONFIRM_ORDER detectado: quantity={quantity}, filters={filters}")
+            log(f"🎯 CONFIRM_ORDER detectado: quantity={quantity}, filters={filters}")
             
             return {
                 "intent_type": "confirm_order",
@@ -438,9 +439,9 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     val_clean = val.strip().lower()
                     if val_clean in ["null", "none", ""]:
                         product_filters[key] = None
-                        print(f"🔄 Filtro normalizado: {key} = '{val}' → None")
+                        log(f"🔄 Filtro normalizado: {key} = '{val}' → None")
             
-            print(f"🔍 Filtros después de normalización: {product_filters}")
+            log(f"🔍 Filtros después de normalización: {product_filters}")
             
             # Base query: solo productos con stock
             query = db.query(models.Product).filter(models.Product.stock > 0)
@@ -455,23 +456,23 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 query = query.filter(
                     models.Product.tipo_prenda.ilike(f"%{tipo_lower}%")
                 )
-                print(f"🔍 Filtro aplicado: tipo_prenda ILIKE '%{tipo_lower}%'")
+                log(f"🔍 Filtro aplicado: tipo_prenda ILIKE '%{tipo_lower}%'")
             
             if color:
                 query = query.filter(models.Product.color.ilike(f"%{color}%"))
-                print(f"🔍 Filtro aplicado: color ILIKE '%{color}%'")
+                log(f"🔍 Filtro aplicado: color ILIKE '%{color}%'")
             
             if talla:
                 query = query.filter(models.Product.talla.ilike(f"%{talla}%"))
-                print(f"🔍 Filtro aplicado: talla ILIKE '%{talla}%'")
+                log(f"🔍 Filtro aplicado: talla ILIKE '%{talla}%'")
             
             # Primer intento
             products = query.limit(10).all()
-            print(f"🔍 Productos encontrados en primer intento: {len(products)}")
+            log(f"🔍 Productos encontrados en primer intento: {len(products)}")
 
             # 🔄 Fallback si no hay resultados
             if not products and tipo:
-                print(f"⚠️ Sin resultados exactos para '{tipo}', buscando relacionados...")
+                log(f"⚠️ Sin resultados exactos para '{tipo}', buscando relacionados...")
                 fallback_query = db.query(models.Product).filter(models.Product.stock > 0)
                 
                 if color:
@@ -484,18 +485,18 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     models.Product.name.ilike(f"%{tipo}%")
                 )
                 products = fallback_query.limit(10).all()
-                print(f"🔄 Productos encontrados en fallback: {len(products)}")
+                log(f"🔄 Productos encontrados en fallback: {len(products)}")
             
             # ✅ DEBUG ADICIONAL: Si sigue sin encontrar nada, mostrar qué hay disponible
             if not products:
-                print("❌ No se encontraron productos. Verificando qué hay disponible...")
+                log("❌ No se encontraron productos. Verificando qué hay disponible...")
                 total_products = db.query(models.Product).filter(models.Product.stock > 0).count()
-                print(f"📊 Total productos con stock: {total_products}")
+                log(f"📊 Total productos con stock: {total_products}")
                 
                 # Mostrar algunos ejemplos
                 sample_products = db.query(models.Product).filter(models.Product.stock > 0).limit(3).all()
                 for sp in sample_products:
-                    print(f"  📋 Ejemplo: {sp.name} | Tipo: '{sp.tipo_prenda}' | Color: '{sp.color}' | Talla: '{sp.talla}'")
+                    log(f"  📋 Ejemplo: {sp.name} | Tipo: '{sp.tipo_prenda}' | Color: '{sp.color}' | Talla: '{sp.talla}'")
             
             # Formateo de productos
             formatted_products = []
@@ -515,7 +516,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 }
                 formatted_products.append(product_data)
 
-            print(f"🔍 Búsqueda ejecutada (final): {len(formatted_products)} productos encontrados")
+            log(f"🔍 Búsqueda ejecutada (final): {len(formatted_products)} productos encontrados")
             
             return {
                 "operation": "search_products",
@@ -528,7 +529,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             }
             
         except Exception as e:
-            print(f"❌ Error en búsqueda: {e}")
+            log(f"❌ Error en búsqueda: {e}")
             return {
                 "operation": "search_products", 
                 "success": False, 
@@ -545,7 +546,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             quantity = data.get("quantity", 50)
             product_filters = data.get("product_filters", {})
             
-            print(f"🛒 Creando pedido: quantity={quantity}, filters={product_filters}")
+            log(f"🛒 Creando pedido: quantity={quantity}, filters={product_filters}")
             
             # ✅ NORMALIZAR FILTROS IGUAL QUE EN _search_products
             for key in ["tipo_prenda", "color", "talla"]:
@@ -554,7 +555,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     val_clean = val.strip().lower()
                     if val_clean in ["null", "none", ""]:
                         product_filters[key] = None
-                        print(f"🔄 Filtro normalizado en create_order: {key} = '{val}' → None")
+                        log(f"🔄 Filtro normalizado en create_order: {key} = '{val}' → None")
         
             # ✅ BASE QUERY: solo productos con stock suficiente
             query = db.query(models.Product).filter(models.Product.stock >= quantity)
@@ -562,28 +563,28 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             # ✅ APLICAR FILTROS SOLO SI NO SON None
             if product_filters.get("tipo_prenda"):
                 query = query.filter(models.Product.tipo_prenda.ilike(f"%{product_filters['tipo_prenda']}%"))
-                print(f"🔍 Filtro pedido: tipo_prenda ILIKE '%{product_filters['tipo_prenda']}%'")
+                log(f"🔍 Filtro pedido: tipo_prenda ILIKE '%{product_filters['tipo_prenda']}%'")
             
             if product_filters.get("color"):
                 query = query.filter(models.Product.color.ilike(f"%{product_filters['color']}%"))
-                print(f"🔍 Filtro pedido: color ILIKE '%{product_filters['color']}%'")
+                log(f"🔍 Filtro pedido: color ILIKE '%{product_filters['color']}%'")
             
             if product_filters.get("talla"):
                 query = query.filter(models.Product.talla.ilike(f"%{product_filters['talla']}%"))
-                print(f"🔍 Filtro pedido: talla ILIKE '%{product_filters['talla']}%'")
+                log(f"🔍 Filtro pedido: talla ILIKE '%{product_filters['talla']}%'")
             
             # Buscar primer producto que coincida
             product = query.first()
             
             if not product:
-                print("❌ No se encontró producto para el pedido")
+                log("❌ No se encontró producto para el pedido")
                 return {
                     "operation": "create_order",
                     "success": False,
                     "error": "No hay producto disponible que coincida con los filtros y tenga stock suficiente"
                 }
             
-            print(f"✅ Producto encontrado para pedido: {product.name} (Stock: {product.stock})")
+            log(f"✅ Producto encontrado para pedido: {product.name} (Stock: {product.stock})")
             
             # Crear pedido usando el CRUD existente
             order_data = schemas.OrderCreate(
@@ -601,7 +602,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             db.commit()
             db.refresh(new_order)
             
-            print(f"🛒 Pedido creado: ID {new_order.id}, {quantity} unidades")
+            log(f"🛒 Pedido creado: ID {new_order.id}, {quantity} unidades")
             
             return {
                 "operation": "create_order",
@@ -624,7 +625,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             
         except Exception as e:
             db.rollback()
-            print(f"❌ Error creando pedido: {e}")
+            log(f"❌ Error creando pedido: {e}")
             return {
                 "operation": "create_order",
                 "success": False,
@@ -677,7 +678,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             # Obtener producto para calcular nuevo precio
             product = db.query(models.Product).filter(models.Product.id == recent_order.product_id).first()
             
-            print(f"✏️ Pedido editado: {old_quantity} → {new_quantity} unidades")
+            log(f"✏️ Pedido editado: {old_quantity} → {new_quantity} unidades")
             
             return {
                 "operation": "edit_order",
@@ -692,7 +693,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             }
             
         except Exception as e:
-            print(f"❌ Error editando pedido: {e}")
+            log(f"❌ Error editando pedido: {e}")
             return {
                 "operation": "edit_order",
                 "success": False,
@@ -788,7 +789,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 
             except Exception as e:
                 error_str = str(e).lower()
-                print(f"❌ Error con key #{self.current_key_index + 1}: {e}")
+                log(f"❌ Error con key #{self.current_key_index + 1}: {e}")
                 
                 if "429" in error_str or "quota" in error_str:
                     # Cambiar a siguiente key

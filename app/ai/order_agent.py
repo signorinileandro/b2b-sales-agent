@@ -339,30 +339,29 @@ EJEMPLOS:
         if not quantity or quantity <= 0:
             return {
                 "is_valid": False,
-                "response": "Para hacer el pedido necesito saber **cuántas unidades** necesitás.\n\n" \
-                          "Por ejemplo: *'Quiero 50 unidades'* o *'Necesito 100 camisetas'*\n\n" \
-                          "¿Cuántas unidades te sirven?"
+                "response": "¡Entendido! Para armar tu pedido, solo necesito saber la cantidad.\n\n" \
+                          "¿Cuántas unidades querés encargar?"
             }
         
         if quantity < 50:
             return {
                 "is_valid": False,
-                "response": f"El pedido mínimo es de **50 unidades**. Solicitaste {quantity} unidades.\n\n" \
-                          f"¿Te interesa ajustar a 50 unidades o más? A mayor cantidad, mejor precio por unidad."
+                "response": f"¡Casi! Nuestro pedido mínimo es de **50 unidades** y solicitaste {quantity}.\n\n" \
+                          f"Podemos ajustar tu pedido a 50. Recordá que a mayor cantidad, ¡mejor es el precio por unidad! ¿Te parece bien?"
             }
         
         # 2. Validar tipo de prenda
         if not product_filters.get("tipo_prenda"):
             return {
                 "is_valid": False,
-                "response": "Para hacer el pedido necesito saber **qué tipo de producto** necesitás.\n\n" \
-                          "Tengo disponible:\n" \
-                          "• **Camisetas** - Para uso diario o uniformes\n" \
-                          "• **Pantalones** - Ideales para trabajo\n" \
-                          "• **Sudaderas** - Perfectas para construcción\n" \
-                          "• **Camisas** - Para uso profesional\n" \
-                          "• **Faldas** - Línea femenina\n\n" \
-                          "¿Cuál de estos productos te interesa?"
+                "response": "¡Perfecto! Ya tengo la cantidad. Ahora decime qué producto te gustaría pedir.\n\n" \
+                          "Podés elegir entre:\n" \
+                          "• Camisetas\n" \
+                          "• Pantalones\n" \
+                          "• Sudaderas\n" \
+                          "• Camisas\n" \
+                          "• Faldas\n\n" \
+                          "¿Cuál te preparamos?"
             }
         
         # 3. Validar que el producto exista con stock suficiente

@@ -9,6 +9,7 @@ import os
 from dotenv import load_dotenv
 import time
 from fastapi import HTTPException
+from ..utils import log
 
 # Cargar variables de entorno
 load_dotenv()
@@ -28,7 +29,7 @@ class ModifyAgent:
         # Configurar Gemini con la primera key válida
         self._configure_gemini()
         
-        print(f"✏️ ModifyAgent inicializado con {len(self.api_keys)} API keys")
+        log(f"✏️ ModifyAgent inicializado con {len(self.api_keys)} API keys")
     
     def _load_api_keys(self) -> List[str]:
         """Carga todas las API keys disponibles desde el .env"""
@@ -52,13 +53,13 @@ class ModifyAgent:
         current_key = self.api_keys[self.current_key_index]
         genai.configure(api_key=current_key)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        print(f"✏️ ModifyAgent configurado con API key #{self.current_key_index + 1}")
+        log(f"✏️ ModifyAgent configurado con API key #{self.current_key_index + 1}")
     
     def _switch_to_next_key(self):
         """Cambia a la siguiente API key disponible"""
         self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
         self._configure_gemini()
-        print(f"✏️🔄 ModifyAgent cambiado a API key #{self.current_key_index + 1}")
+        log(f"✏️🔄 ModifyAgent cambiado a API key #{self.current_key_index + 1}")
     
     async def _make_gemini_request_with_fallback(self, prompt: str, **kwargs):
         """Hace petición a Gemini con fallback automático entre API keys"""
@@ -69,14 +70,14 @@ class ModifyAgent:
         while retry_count < max_retries:
             try:
                 current_key_num = self.current_key_index + 1
-                print(f"✏️🔍 ModifyAgent usando API Key #{current_key_num}")
+                log(f"✏️🔍 ModifyAgent usando API Key #{current_key_num}")
                 
                 # Verificar si esta key tiene delay de retry
                 key_id = f"modify_key_{self.current_key_index}"
                 if key_id in self.key_retry_delays:
                     retry_time = self.key_retry_delays[key_id]
                     if time.time() < retry_time:
-                        print(f"✏️⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
+                        log(f"✏️⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
                         self._switch_to_next_key()
                         retry_count += 1
                         continue
@@ -93,11 +94,11 @@ class ModifyAgent:
                 
             except Exception as e:
                 error_str = str(e).lower()
-                print(f"✏️❌ Error con API key #{current_key_num}: {e}")
+                log(f"✏️❌ Error con API key #{current_key_num}: {e}")
                 
                 # Verificar si es error de cuota
                 if "quota" in error_str or "exceeded" in error_str or "429" in error_str:
-                    print(f"✏️🚫 API Key #{current_key_num} agotó su cuota")
+                    log(f"✏️🚫 API Key #{current_key_num} agotó su cuota")
                     
                     # Poner esta key en cooldown por 1 hora
                     self.key_retry_delays[key_id] = time.time() + 3600
@@ -108,7 +109,7 @@ class ModifyAgent:
                     continue
                     
                 elif "rate limit" in error_str or "rate_limit" in error_str:
-                    print(f"✏️⏳ API Key #{current_key_num} tiene rate limiting")
+                    log(f"✏️⏳ API Key #{current_key_num} tiene rate limiting")
                     
                     # Cooldown más corto para rate limiting (5 minutos)
                     self.key_retry_delays[key_id] = time.time() + 300
@@ -120,7 +121,7 @@ class ModifyAgent:
                     
                 else:
                     # Error no relacionado con cuota, intentar una vez más con la siguiente key
-                    print(f"✏️🔄 Error general, intentando con siguiente key")
+                    log(f"✏️🔄 Error general, intentando con siguiente key")
                     self._switch_to_next_key()
                     retry_count += 1
                     continue
@@ -132,7 +133,7 @@ class ModifyAgent:
         """Maneja modificaciones de pedidos con análisis inteligente"""
         
         try:
-            print(f"✏️ ModifyAgent procesando: {message}")
+            log(f"✏️ ModifyAgent procesando: {message}")
             
             # 1. Identificar qué pedido quiere modificar
             order_identification = await self._identify_target_order(message, conversation)
@@ -161,7 +162,7 @@ class ModifyAgent:
             return response
             
         except Exception as e:
-            print(f"✏️❌ Error en ModifyAgent: {e}")
+            log(f"✏️❌ Error en ModifyAgent: {e}")
             return "Disculpa, tuve un problema modificando tu pedido. ¿Podrías especificar qué pedido querés cambiar y cómo?"
     
     async def _identify_target_order(self, message: str, conversation: Dict) -> Dict:
@@ -245,7 +246,7 @@ Responde SOLO con JSON válido:
                     response_clean = response_clean[3:-3]
                 
                 analysis = json.loads(response_clean)
-                print(f"✏️🎯 Identificación de pedido: {analysis}")
+                log(f"✏️🎯 Identificación de pedido: {analysis}")
                 
                 # Procesar resultado
                 if analysis.get("target_found") and analysis.get("target_order_id"):
@@ -296,7 +297,7 @@ Responde SOLO con JSON válido:
                     }
                 
             except Exception as e:
-                print(f"✏️❌ Error en análisis Gemini: {e}")
+                log(f"✏️❌ Error en análisis Gemini: {e}")
                 # Fallback: usar el pedido más reciente modificable
                 modifiable_orders = [o for o in orders_info if o["can_modify"]]
                 
@@ -314,7 +315,7 @@ Responde SOLO con JSON válido:
                     }
                     
         except Exception as e:
-            print(f"✏️❌ Error identificando pedido: {e}")
+            log(f"✏️❌ Error identificando pedido: {e}")
             return {
                 "found": False,
                 "response": "Tuve un problema accediendo a tus pedidos. ¿Podrías intentar de nuevo?"
@@ -371,7 +372,7 @@ EJEMPLOS:
                 response_clean = response_clean[3:-3]
             
             analysis = json.loads(response_clean)
-            print(f"✏️🎯 Análisis de modificación: {analysis}")
+            log(f"✏️🎯 Análisis de modificación: {analysis}")
             
             # Calcular cantidad final
             current_qty = order_info["quantity"]
@@ -394,7 +395,7 @@ EJEMPLOS:
             return analysis
             
         except Exception as e:
-            print(f"✏️❌ Error analizando modificación: {e}")
+            log(f"✏️❌ Error analizando modificación: {e}")
             
             # Fallback basado en palabras clave
             import re
@@ -544,7 +545,7 @@ EJEMPLOS:
             }
             
         except Exception as e:
-            print(f"✏️❌ Error validando stock: {e}")
+            log(f"✏️❌ Error validando stock: {e}")
             return {
                 "is_valid": False,
                 "response": "Tuve un problema verificando el stock. ¿Podrías intentar de nuevo?"
@@ -608,7 +609,7 @@ EJEMPLOS:
                 }
                 
         except HTTPException as http_e:
-            print(f"✏️❌ Error HTTP en modificación: {http_e.detail}")
+            log(f"✏️❌ Error HTTP en modificación: {http_e.detail}")
             return {
                 "success": False,
                 "error": http_e.detail,
@@ -616,7 +617,7 @@ EJEMPLOS:
             }
             
         except Exception as e:
-            print(f"✏️❌ Error ejecutando modificación: {e}")
+            log(f"✏️❌ Error ejecutando modificación: {e}")
             return {
                 "success": False,
                 "error": str(e),

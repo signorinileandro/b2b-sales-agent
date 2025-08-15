@@ -365,6 +365,17 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         try:
             product_filters = filters.get("product_filters", {})
             
+            # ✅ NORMALIZAR FILTROS: convertir "null", "None", "" en None real
+            for key in ["tipo_prenda", "color", "talla"]:
+                val = product_filters.get(key)
+                if isinstance(val, str):
+                    val_clean = val.strip().lower()
+                    if val_clean in ["null", "none", ""]:
+                        product_filters[key] = None
+                        print(f"🔄 Filtro normalizado: {key} = '{val}' → None")
+            
+            print(f"🔍 Filtros después de normalización: {product_filters}")
+            
             # Base query: solo productos con stock
             query = db.query(models.Product).filter(models.Product.stock > 0)
             
@@ -372,21 +383,25 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             color = product_filters.get("color")
             talla = product_filters.get("talla")
 
-            # Búsqueda más flexible
+            # ✅ APLICAR FILTROS SOLO SI NO SON None
             if tipo:
                 tipo_lower = tipo.lower()
                 query = query.filter(
                     models.Product.tipo_prenda.ilike(f"%{tipo_lower}%")
                 )
+                print(f"🔍 Filtro aplicado: tipo_prenda ILIKE '%{tipo_lower}%'")
             
             if color:
                 query = query.filter(models.Product.color.ilike(f"%{color}%"))
+                print(f"🔍 Filtro aplicado: color ILIKE '%{color}%'")
             
             if talla:
                 query = query.filter(models.Product.talla.ilike(f"%{talla}%"))
+                print(f"🔍 Filtro aplicado: talla ILIKE '%{talla}%'")
             
             # Primer intento
             products = query.limit(10).all()
+            print(f"🔍 Productos encontrados en primer intento: {len(products)}")
 
             # 🔄 Fallback si no hay resultados
             if not products and tipo:
@@ -403,6 +418,18 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     models.Product.name.ilike(f"%{tipo}%")
                 )
                 products = fallback_query.limit(10).all()
+                print(f"🔄 Productos encontrados en fallback: {len(products)}")
+            
+            # ✅ DEBUG ADICIONAL: Si sigue sin encontrar nada, mostrar qué hay disponible
+            if not products:
+                print("❌ No se encontraron productos. Verificando qué hay disponible...")
+                total_products = db.query(models.Product).filter(models.Product.stock > 0).count()
+                print(f"📊 Total productos con stock: {total_products}")
+                
+                # Mostrar algunos ejemplos
+                sample_products = db.query(models.Product).filter(models.Product.stock > 0).limit(3).all()
+                for sp in sample_products:
+                    print(f"  📋 Ejemplo: {sp.name} | Tipo: '{sp.tipo_prenda}' | Color: '{sp.color}' | Talla: '{sp.talla}'")
             
             # Formateo de productos
             formatted_products = []

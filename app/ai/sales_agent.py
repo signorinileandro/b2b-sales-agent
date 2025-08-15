@@ -61,6 +61,30 @@ class SalesAgent:
         intent = await query_agent.extract_structured_intent(message, context)
         print(f"🎯 Intención detectada: {intent['intent_type']} (confianza: {intent['confidence']})")
         
+        # ✅ COMPLETAR FILTROS CON CONTEXTO SI FALTA INFORMACIÓN
+        if intent['intent_type'] == 'confirm_order':
+            product_filters = intent['extracted_data']['product_filters']
+            
+            # Si no especifica tipo de prenda, usar el último buscado
+            if not product_filters.get('tipo_prenda') and context.get('last_searched_products'):
+                last_products = context['last_searched_products']
+                if last_products:
+                    last_type = last_products[0].get('tipo_prenda')
+                    product_filters['tipo_prenda'] = last_type
+                    print(f"🔄 Usando tipo del contexto: {last_type}")
+            
+            # Si no especifica color, usar el del contexto si es específico
+            if not product_filters.get('color') and 'last_search_query' in context:
+                query = context['last_search_query'].lower()
+                for color in ["verde", "azul", "negro", "blanco", "rojo", "amarillo", "gris"]:
+                    if color in query:
+                        product_filters['color'] = color
+                        print(f"🔄 Usando color del contexto: {color}")
+                        break
+            
+            # Actualizar intent con filtros completados
+            intent['extracted_data']['product_filters'] = product_filters
+        
         # 3. ✅ EJECUTAR OPERACIÓN EN BASE DE DATOS SI ES NECESARIO
         db_result = None
         if intent['intent_type'] in ['search_products', 'confirm_order', 'edit_order', 'ask_stock']:
@@ -151,6 +175,21 @@ class SalesAgent:
         # Mantener solo últimas 5 interacciones
         if len(context["conversation_history"]) > 5:
             context["conversation_history"] = context["conversation_history"][-5:]
+        
+        # En process_message, DESPUÉS de ejecutar search_products, agregar:
+        if intent['intent_type'] == 'search_products' and db_result and db_result.get('success'):
+            # Guardar consulta para contexto
+            filters = intent['extracted_data']['product_filters']
+            search_terms = []
+            if filters.get('tipo_prenda'):
+                search_terms.append(filters['tipo_prenda'])
+            if filters.get('color'):
+                search_terms.append(filters['color'])
+            if filters.get('talla'):
+                search_terms.append(f"talla {filters['talla']}")
+            
+            context['last_search_query'] = " ".join(search_terms)
+            print(f"💾 Guardado en contexto: {context['last_search_query']}")
         
         return sales_response
     

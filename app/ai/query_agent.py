@@ -183,6 +183,15 @@ Si el mensaje es corto y NO menciona tipo de prenda, pero el contexto indica una
 - "talle M" → agregar talla al filtro existente
 - "para construcción" → mantener tipo de prenda del contexto
 
+EJEMPLOS DE CONFIRM_ORDER:
+- "haceme el pedido por 50 unidades de buzos azules en talla L" → {{"intent_type": "confirm_order", "quantity": 50, "product_filters": {{"tipo_prenda": "sudadera", "color": "azul", "talla": "L"}}}}
+- "quiero encargarte 80 en talle L color verde" → {{"intent_type": "confirm_order", "quantity": 80, "product_filters": {{"color": "verde", "talla": "L"}}}}
+- "necesito 100 unidades" (después de ver productos) → {{"intent_type": "confirm_order", "quantity": 100, "is_continuation": true}}
+- "generame el pedido" (después de especificar producto) → {{"intent_type": "confirm_order", "is_continuation": true}}
+
+PALABRAS CLAVE CONFIRM_ORDER: pedido, encargar, quiero, necesito, generame, haceme, confirmar, solicitar
+PALABRAS CLAVE CANTIDAD: unidades, 50, 80, 100, 200, cantidad
+
 Responde SOLO con el JSON, sin explicaciones adicionales.
 """
 
@@ -321,6 +330,61 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "quantity": None,
                     "action_keywords": ["sudadera"],
                     "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        # ✅ DETECCIÓN MEJORADA DE CONFIRM_ORDER
+        if any(word in user_lower for word in [
+            "pedido", "encargar", "quiero", "necesito", "generame", 
+            "haceme", "confirmar", "solicitar", "pedir"
+        ]) and any(word in user_lower for word in [
+            "unidades", "50", "80", "100", "200", "cantidad"
+        ]):
+            
+            # Extraer cantidad
+            quantity = None
+            for word in user_message.split():
+                if word.isdigit():
+                    quantity = int(word)
+                    break
+            
+            # Usar contexto si no especifica producto
+            filters = {"tipo_prenda": None, "color": None, "talla": None}
+            
+            # Detectar producto específico en el mensaje
+            for tipo in ["pantalón", "pantalones", "camiseta", "camisetas", "sudadera", "buzos", "camisa", "camisas", "falda", "faldas"]:
+                if tipo in user_lower:
+                    if tipo in ["pantalones", "pantalón"]:
+                        filters["tipo_prenda"] = "pantalón"
+                    elif tipo in ["buzos"]:
+                        filters["tipo_prenda"] = "sudadera"
+                    else:
+                        filters["tipo_prenda"] = tipo.rstrip('s')  # remover plural
+                    break
+            
+            # Detectar color
+            for color in ["verde", "azul", "negro", "blanco", "rojo", "amarillo", "gris"]:
+                if color in user_lower:
+                    filters["color"] = color
+                    break
+            
+            # Detectar talla
+            for talla in ["S", "M", "L", "XL", "XXL"]:
+                if f"talle {talla.lower()}" in user_lower or f"talla {talla.lower()}" in user_lower:
+                    filters["talla"] = talla
+                    break
+            
+            print(f"🎯 CONFIRM_ORDER detectado: quantity={quantity}, filters={filters}")
+            
+            return {
+                "intent_type": "confirm_order",
+                "confidence": 0.95,
+                "extracted_data": {
+                    "product_filters": filters,
+                    "quantity": quantity,
+                    "action_keywords": ["pedido", "confirmar"],
+                    "is_continuation": True,  # Usar contexto
                     "specific_request": user_message
                 }
             }

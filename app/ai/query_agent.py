@@ -37,7 +37,7 @@ class QueryAgent:
                 current_key = self.api_keys[self.current_key_index]
                 genai.configure(api_key=current_key)
                 self.model = genai.GenerativeModel('gemini-1.5-flash')
-                print(f"🔑 Query Agent usando API Key #{self.current_key_index + 1}")
+                print(f"🔍 Query Agent usando API Key #{self.current_key_index + 1}")
                 return True
             except:
                 return False
@@ -49,79 +49,6 @@ class QueryAgent:
 
     async def extract_structured_intent(self, user_message: str, conversation_context: Dict) -> Dict:
         """Extrae intención estructurada del mensaje usando prompt específico"""
-        
-        print(f"🎯 ANALIZANDO MENSAJE: '{user_message}'")
-        
-        # ✅ DETECCIÓN MEJORADA DE CONFIRM_ORDER ANTES DE GEMINI
-        user_lower = user_message.lower()
-        
-        # Palabras clave para CONFIRM_ORDER
-        confirm_keywords = [
-            "pedido", "encargar", "quiero", "necesito", "generame", 
-            "haceme", "confirmar", "solicitar", "pedir", "generar"
-        ]
-        
-        quantity_indicators = [
-            "50", "100", "200", "80", "unidades", "cantidad"
-        ]
-        
-        has_confirm_keyword = any(word in user_lower for word in confirm_keywords)
-        has_quantity = any(word in user_lower for word in quantity_indicators)
-        
-        print(f"🔍 Análisis CONFIRM_ORDER:")
-        print(f"  - Tiene palabra de confirmación: {has_confirm_keyword}")
-        print(f"  - Tiene cantidad: {has_quantity}")
-        
-        if has_confirm_keyword and (has_quantity or any(word.isdigit() for word in user_message.split())):
-            print("🎯 DETECTADO CONFIRM_ORDER directo!")
-            
-            # Extraer cantidad
-            quantity = 50  # Default
-            for word in user_message.split():
-                if word.isdigit():
-                    quantity = int(word)
-                    break
-            
-            # Detectar producto específico
-            filters = {"tipo_prenda": None, "color": None, "talla": None}
-            
-            # Tipo de prenda
-            if any(word in user_lower for word in ["pantalon", "pantalones"]):
-                filters["tipo_prenda"] = "pantalón"
-            elif any(word in user_lower for word in ["camiseta", "camisetas", "remera", "remeras"]):
-                filters["tipo_prenda"] = "camiseta"
-            elif any(word in user_lower for word in ["sudadera", "sudaderas", "buzo", "buzos"]):
-                filters["tipo_prenda"] = "sudadera"
-            elif any(word in user_lower for word in ["camisa", "camisas"]):
-                filters["tipo_prenda"] = "camisa"
-            elif any(word in user_lower for word in ["falda", "faldas"]):
-                filters["tipo_prenda"] = "falda"
-            
-            # Color
-            for color in ["verde", "azul", "negro", "blanco", "rojo", "amarillo", "gris"]:
-                if color in user_lower:
-                    filters["color"] = color
-                    break
-            
-            # Talla
-            for talla in ["S", "M", "L", "XL", "XXL"]:
-                if f"talle {talla.lower()}" in user_lower or f"talla {talla.lower()}" in user_lower or f" {talla.lower()}" in user_lower:
-                    filters["talla"] = talla
-                    break
-            
-            print(f"✅ CONFIRM_ORDER detectado: quantity={quantity}, filters={filters}")
-            
-            return {
-                "intent_type": "confirm_order",
-                "confidence": 0.95,
-                "extracted_data": {
-                    "product_filters": filters,
-                    "quantity": quantity,
-                    "action_keywords": ["pedido", "confirmar"],
-                    "is_continuation": False,
-                    "specific_request": user_message
-                }
-            }
         
         # ✅ MAPEO ACTUALIZADO CON PRODUCTOS REALES DE LA BD
         user_message_mapped = user_message.lower()
@@ -174,7 +101,7 @@ class QueryAgent:
                 user_message_mapped = user_message_mapped.replace(original, mapped)
                 print(f"🔄 Mapeo aplicado: '{original}' → '{mapped}'")
                 break
-
+        
         extraction_prompt = f"""
 Eres un asistente especializado en extraer intenciones de mensajes de clientes B2B de textiles.
 
@@ -191,16 +118,11 @@ IMPORTANTE: Los productos disponibles son EXACTAMENTE:
 - COLOR: "blanco", "negro", "azul", "verde", "gris", "rojo", "amarillo"
 - TALLA: "S", "M", "L", "XL", "XXL"
 
-PALABRAS CLAVE CRÍTICAS PARA CONFIRM_ORDER:
-- "pedido", "encargar", "quiero", "necesito", "generame", "haceme", "confirmar", "solicitar", "pedir", "generar"
-- CUALQUIER número como "50", "100", "200" junto con "unidades"
-
-Si el mensaje contiene CUALQUIERA de estas palabras + cantidad/número, es CONFIRM_ORDER, NO search_products.
-
-EJEMPLOS ESPECÍFICOS DE CONFIRM_ORDER:
-- "generame un pedido por 50 pantalones gris en talla L" → {{"intent_type": "confirm_order", "quantity": 50, "product_filters": {{"tipo_prenda": "pantalón", "color": "gris", "talla": "L"}}}}
-- "quiero encargar 50 pantalones gris en talla L" → {{"intent_type": "confirm_order", "quantity": 50, "product_filters": {{"tipo_prenda": "pantalón", "color": "gris", "talla": "L"}}}}
-- "haceme el pedido por 80 camisetas azules" → {{"intent_type": "confirm_order", "quantity": 80, "product_filters": {{"tipo_prenda": "camiseta", "color": "azul"}}}}
+MAPEOS AUTOMÁTICOS APLICADOS:
+- chaquetas/camperas/abrigos → sudadera
+- remeras/playeras/polos → camiseta  
+- jeans → pantalón
+- polleras → falda
 
 Analiza el mensaje y responde SOLAMENTE con JSON válido:
 
@@ -222,6 +144,56 @@ Analiza el mensaje y responde SOLAMENTE con JSON válido:
     }}
 }}
 
+EJEMPLOS ESPECÍFICOS POR TIPO DE PRENDA:
+
+1. PANTALONES:
+- "necesito pantalones negros talle L" → {{"tipo_prenda": "pantalón", "color": "negro", "talla": "L"}}
+- "jeans azules para trabajo" → {{"tipo_prenda": "pantalón", "color": "azul"}}
+- "pantalones de trabajo, que colores tenes?" → {{"tipo_prenda": "pantalón"}}
+
+2. CAMISETAS:
+- "camisetas blancas talle M para el equipo" → {{"tipo_prenda": "camiseta", "color": "blanco", "talla": "M"}}
+- "remeras rojas" → {{"tipo_prenda": "camiseta", "color": "rojo"}}
+- "playeras para construcción" → {{"tipo_prenda": "camiseta"}}
+
+3. SUDADERAS:
+- "chaquetas negras para construcción" → {{"tipo_prenda": "sudadera", "color": "negro"}}
+- "buzos grises talle XL" → {{"tipo_prenda": "sudadera", "color": "gris", "talla": "XL"}}
+- "camperas para trabajo pesado" → {{"tipo_prenda": "sudadera"}}
+
+4. CAMISAS:
+- "camisas azules para oficina talle L" → {{"tipo_prenda": "camisa", "color": "azul", "talla": "L"}}
+- "shirts blancos" → {{"tipo_prenda": "camisa", "color": "blanco"}}
+- "camisas formales" → {{"tipo_prenda": "camisa"}}
+
+5. FALDAS:
+- "faldas negras talle S" → {{"tipo_prenda": "falda", "color": "negro", "talla": "S"}}
+- "polleras azules" → {{"tipo_prenda": "falda", "color": "azul"}}
+- "faldas para uniformes" → {{"tipo_prenda": "falda"}}
+
+CASOS ESPECIALES:
+- "para hombre, que colores tenes" (contexto: buscaba chaquetas) → {{"is_continuation": true, "specific_request": "colores disponibles"}}
+- "talle L" (contexto: viendo productos) → {{"is_continuation": true, "product_filters": {{"talla": "L"}}}}
+- "200 unidades" → {{"quantity": 200, "intent_type": "confirm_order"}}
+- "cambiar a 150" → {{"quantity": 150, "intent_type": "edit_order"}}
+
+PATRONES DE CONTINUACIÓN:
+Si el mensaje es corto y NO menciona tipo de prenda, pero el contexto indica una búsqueda previa:
+- "que colores tenes?" → buscar en historial el tipo de prenda y marcar is_continuation: true
+- "talle M" → agregar talla al filtro existente
+- "para construcción" → mantener tipo de prenda del contexto
+
+# En extract_structured_intent, ACTUALIZAR examples:
+
+EJEMPLOS DE CONFIRM_ORDER:
+- "haceme el pedido por 50 unidades de buzos azules en talla L" → {{"intent_type": "confirm_order", "quantity": 50, "product_filters": {{"tipo_prenda": "sudadera", "color": "azul", "talla": "L"}}}}
+- "quiero encargarte 80 en talle L color verde" → {{"intent_type": "confirm_order", "quantity": 80, "product_filters": {{"color": "verde", "talla": "L"}}}}
+- "necesito 100 unidades" (después de ver productos) → {{"intent_type": "confirm_order", "quantity": 100, "is_continuation": true}}
+- "generame el pedido" (después de especificar producto) → {{"intent_type": "confirm_order", "is_continuation": true}}
+
+PALABRAS CLAVE CONFIRM_ORDER: pedido, encargar, quiero, necesito, generame, haceme, confirmar, solicitar
+PALABRAS CLAVE CANTIDAD: unidades, 50, 80, 100, 200, cantidad
+
 Responde SOLO con el JSON, sin explicaciones adicionales.
 """
 
@@ -242,48 +214,76 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     parsed_intent["extracted_data"]["original_term"] = original_term
                     parsed_intent["extracted_data"]["mapped_term"] = mapped_term
                 
-                print(f"✅ Gemini result: {parsed_intent['intent_type']} (confidence: {parsed_intent['confidence']})")
-                
                 return parsed_intent
                 
         except Exception as e:
             print(f"❌ Error extrayendo intención: {e}")
         
-        # ✅ FALLBACK MEJORADO
-        print("🔄 Usando fallback detection...")
+        # ✅ FALLBACK MEJORADO CON TODOS LOS MAPEOS
+        user_lower = user_message.lower()
         
-        # Fallback para confirm_order si Gemini falla
-        if has_confirm_keyword and has_quantity:
-            print("✅ Fallback CONFIRM_ORDER activado")
-            
-            quantity = 50
-            for word in user_message.split():
-                if word.isdigit():
-                    quantity = int(word)
-                    break
-            
-            filters = {"tipo_prenda": None, "color": None, "talla": None}
-            
-            if "pantalon" in user_lower:
-                filters["tipo_prenda"] = "pantalón"
-            if "gris" in user_lower:
-                filters["color"] = "gris"
-            if "talla l" in user_lower or " l " in user_lower:
-                filters["talla"] = "L"
-            
+        # Chaquetas/camperas/abrigos → sudadera
+        if any(word in user_lower for word in ["chaqueta", "campera", "abrigo", "jacket", "buzo"]):
             return {
-                "intent_type": "confirm_order",
+                "intent_type": "search_products",
+                "confidence": 0.8,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "sudadera", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["chaqueta", "mapped"],
+                    "is_continuation": False,
+                    "specific_request": user_message,
+                    "original_term": "chaquetas",
+                    "mapped_term": "sudadera"
+                }
+            }
+        
+        # Remeras/playeras → camiseta
+        if any(word in user_lower for word in ["remera", "playera", "polo", "polera"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.8,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "camiseta", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["remera", "mapped"],
+                    "is_continuation": False,
+                    "specific_request": user_message,
+                    "original_term": "remeras",
+                    "mapped_term": "camiseta"
+                }
+            }
+        
+        # Jeans → pantalón
+        if any(word in user_lower for word in ["jean", "jeans"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.8,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "pantalón", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["jean", "mapped"],
+                    "is_continuation": False,
+                    "specific_request": user_message,
+                    "original_term": "jeans",
+                    "mapped_term": "pantalón"
+                }
+            }
+        
+        # Búsquedas directas de productos existentes
+        if any(word in user_lower for word in ["camiseta", "camisetas"]):
+            return {
+                "intent_type": "search_products",
                 "confidence": 0.9,
                 "extracted_data": {
-                    "product_filters": filters,
-                    "quantity": quantity,
-                    "action_keywords": ["pedido", "fallback"],
+                    "product_filters": {"tipo_prenda": "camiseta", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["camiseta"],
                     "is_continuation": False,
                     "specific_request": user_message
                 }
             }
         
-        # Otros fallbacks...
         if any(word in user_lower for word in ["pantalón", "pantalones"]):
             return {
                 "intent_type": "search_products",
@@ -293,6 +293,100 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "quantity": None,
                     "action_keywords": ["pantalón"],
                     "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["camisa", "camisas"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "camisa", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["camisa"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["falda", "faldas", "pollera", "polleras"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "falda", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["falda"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["sudadera", "sudaderas"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "sudadera", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["sudadera"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        # ✅ DETECCIÓN MEJORADA DE CONFIRM_ORDER
+        if any(word in user_lower for word in [
+            "pedido", "encargar", "quiero", "necesito", "generame", 
+            "haceme", "confirmar", "solicitar", "pedir"
+        ]) and any(word in user_lower for word in [
+            "unidades", "50", "80", "100", "200", "cantidad"
+        ]):
+            
+            # Extraer cantidad
+            quantity = None
+            for word in user_message.split():
+                if word.isdigit():
+                    quantity = int(word)
+                    break
+            
+            # Usar contexto si no especifica producto
+            filters = {"tipo_prenda": None, "color": None, "talla": None}
+            
+            # Detectar producto específico en el mensaje
+            for tipo in ["pantalón", "pantalones", "camiseta", "camisetas", "sudadera", "buzos", "camisa", "camisas", "falda", "faldas"]:
+                if tipo in user_lower:
+                    if tipo in ["pantalones", "pantalón"]:
+                        filters["tipo_prenda"] = "pantalón"
+                    elif tipo in ["buzos"]:
+                        filters["tipo_prenda"] = "sudadera"
+                    else:
+                        filters["tipo_prenda"] = tipo.rstrip('s')  # remover plural
+                    break
+            
+            # Detectar color
+            for color in ["verde", "azul", "negro", "blanco", "rojo", "amarillo", "gris"]:
+                if color in user_lower:
+                    filters["color"] = color
+                    break
+            
+            # Detectar talla
+            for talla in ["S", "M", "L", "XL", "XXL"]:
+                if f"talle {talla.lower()}" in user_lower or f"talla {talla.lower()}" in user_lower:
+                    filters["talla"] = talla
+                    break
+            
+            print(f"🎯 CONFIRM_ORDER detectado: quantity={quantity}, filters={filters}")
+            
+            return {
+                "intent_type": "confirm_order",
+                "confidence": 0.95,
+                "extracted_data": {
+                    "product_filters": filters,
+                    "quantity": quantity,
+                    "action_keywords": ["pedido", "confirmar"],
+                    "is_continuation": True,  # Usar contexto
                     "specific_request": user_message
                 }
             }
@@ -315,13 +409,10 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         intent_type = intent.get("intent_type")
         extracted_data = intent.get("extracted_data", {})
         
-        print(f"🗄️ Ejecutando operación: {intent_type}")
-        
         if intent_type == "search_products":
             return await self._search_products(extracted_data)
         
         elif intent_type == "confirm_order":
-            print(f"🛒 EJECUTANDO CREATE_ORDER con datos: {extracted_data}")
             return await self._create_order(extracted_data, user_phone, conversation_id)
         
         elif intent_type == "edit_order":
@@ -378,6 +469,34 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             products = query.limit(10).all()
             print(f"🔍 Productos encontrados en primer intento: {len(products)}")
 
+            # 🔄 Fallback si no hay resultados
+            if not products and tipo:
+                print(f"⚠️ Sin resultados exactos para '{tipo}', buscando relacionados...")
+                fallback_query = db.query(models.Product).filter(models.Product.stock > 0)
+                
+                if color:
+                    fallback_query = fallback_query.filter(models.Product.color.ilike(f"%{color}%"))
+                if talla:
+                    fallback_query = fallback_query.filter(models.Product.talla.ilike(f"%{talla}%"))
+
+                # Buscar por nombre o categoría, ignorando tipo_prenda
+                fallback_query = fallback_query.filter(
+                    models.Product.name.ilike(f"%{tipo}%")
+                )
+                products = fallback_query.limit(10).all()
+                print(f"🔄 Productos encontrados en fallback: {len(products)}")
+            
+            # ✅ DEBUG ADICIONAL: Si sigue sin encontrar nada, mostrar qué hay disponible
+            if not products:
+                print("❌ No se encontraron productos. Verificando qué hay disponible...")
+                total_products = db.query(models.Product).filter(models.Product.stock > 0).count()
+                print(f"📊 Total productos con stock: {total_products}")
+                
+                # Mostrar algunos ejemplos
+                sample_products = db.query(models.Product).filter(models.Product.stock > 0).limit(3).all()
+                for sp in sample_products:
+                    print(f"  📋 Ejemplo: {sp.name} | Tipo: '{sp.tipo_prenda}' | Color: '{sp.color}' | Talla: '{sp.talla}'")
+            
             # Formateo de productos
             formatted_products = []
             for product in products:
@@ -391,12 +510,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "precio_100_u": product.precio_100_u,
                     "precio_200_u": product.precio_200_u,
                     "stock": product.stock,
-                    "descripcion": product.descripcion or 'Material resistente y de calidad premium para uso profesional',
-                    "categoria": product.categoria or 'Textil Profesional'
+                    "descripcion": product.descripcion or 'Material de calidad premium',
+                    "categoria": product.categoria or 'General'
                 }
                 formatted_products.append(product_data)
 
-            print(f"✅ Búsqueda ejecutada: {len(formatted_products)} productos encontrados")
+            print(f"🔍 Búsqueda ejecutada (final): {len(formatted_products)} productos encontrados")
             
             return {
                 "operation": "search_products",
@@ -458,17 +577,10 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             
             if not product:
                 print("❌ No se encontró producto para el pedido")
-                
-                # DEBUG: Ver qué productos hay disponibles
-                available = db.query(models.Product).filter(models.Product.stock >= quantity).limit(3).all()
-                print(f"📊 Productos disponibles con stock >= {quantity}:")
-                for p in available:
-                    print(f"  - {p.name} | {p.tipo_prenda} | {p.color} | {p.talla} | Stock: {p.stock}")
-                
                 return {
                     "operation": "create_order",
                     "success": False,
-                    "error": f"No hay producto disponible que coincida con los filtros y tenga stock suficiente (necesario: {quantity})"
+                    "error": "No hay producto disponible que coincida con los filtros y tenga stock suficiente"
                 }
             
             print(f"✅ Producto encontrado para pedido: {product.name} (Stock: {product.stock})")
@@ -489,7 +601,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             db.commit()
             db.refresh(new_order)
             
-            print(f"🛒 Pedido creado EXITOSAMENTE: ID {new_order.id}, {quantity} unidades")
+            print(f"🛒 Pedido creado: ID {new_order.id}, {quantity} unidades")
             
             return {
                 "operation": "create_order",
@@ -513,8 +625,6 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         except Exception as e:
             db.rollback()
             print(f"❌ Error creando pedido: {e}")
-            import traceback
-            traceback.print_exc()
             return {
                 "operation": "create_order",
                 "success": False,
@@ -523,7 +633,6 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         finally:
             db.close()
     
-    # Otros métodos sin cambios...
     async def _edit_recent_order(self, data: Dict, user_phone: str) -> Dict:
         """Edita pedido reciente si está dentro de los 5 minutos"""
         
@@ -632,8 +741,8 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "tipo_prenda": product.tipo_prenda,  
                     "color": product.color,              
                     "talla": product.talla,
-                    "descripcion": product.descripcion or 'Material resistente y de calidad premium para uso profesional',
-                    "categoria": product.categoria or 'Textil Profesional'
+                    "descripcion": product.descripcion or 'Material de calidad premium',
+                    "categoria": product.categoria or 'General'
                 })
                 total_stock += product.stock
             

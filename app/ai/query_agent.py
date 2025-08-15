@@ -115,7 +115,7 @@ MENSAJE PROCESADO: "{user_message_mapped}"
 IMPORTANTE: Los productos disponibles son EXACTAMENTE:
 - TIPO_PRENDA: "pantalón", "camiseta", "falda", "sudadera", "camisa"
 - COLOR: "blanco", "negro", "azul", "verde", "gris", "rojo", "amarillo"
-- TALLA: "XS", "S", "M", "L", "XL", "XXL", "XXXL"
+- TALLA: "S", "M", "L", "XL", "XXL"
 
 MAPEOS AUTOMÁTICOS APLICADOS:
 - chaquetas/camperas/abrigos → sudadera
@@ -132,7 +132,7 @@ Analiza el mensaje y responde SOLAMENTE con JSON válido:
         "product_filters": {{
             "tipo_prenda": "pantalón|camiseta|falda|sudadera|camisa|null",
             "color": "blanco|negro|azul|verde|gris|rojo|amarillo|null", 
-            "talla": "XS|S|M|L|XL|XXL|XXXL|null"
+            "talla": "S|M|L|XL|XXL|null"
         }},
         "quantity": number_or_null,
         "action_keywords": ["palabras", "clave"],
@@ -143,10 +143,44 @@ Analiza el mensaje y responde SOLAMENTE con JSON válido:
     }}
 }}
 
-EJEMPLOS DE MAPEO:
+EJEMPLOS ESPECÍFICOS POR TIPO DE PRENDA:
+
+1. PANTALONES:
+- "necesito pantalones negros talle L" → {{"tipo_prenda": "pantalón", "color": "negro", "talla": "L"}}
+- "jeans azules para trabajo" → {{"tipo_prenda": "pantalón", "color": "azul"}}
+- "pantalones de trabajo, que colores tenes?" → {{"tipo_prenda": "pantalón"}}
+
+2. CAMISETAS:
+- "camisetas blancas talle M para el equipo" → {{"tipo_prenda": "camiseta", "color": "blanco", "talla": "M"}}
+- "remeras rojas" → {{"tipo_prenda": "camiseta", "color": "rojo"}}
+- "playeras para construcción" → {{"tipo_prenda": "camiseta"}}
+
+3. SUDADERAS:
 - "chaquetas negras para construcción" → {{"tipo_prenda": "sudadera", "color": "negro"}}
-- "remeras blancas talle L" → {{"tipo_prenda": "camiseta", "color": "blanco", "talla": "L"}}
-- "jeans azules" → {{"tipo_prenda": "pantalón", "color": "azul"}}
+- "buzos grises talle XL" → {{"tipo_prenda": "sudadera", "color": "gris", "talla": "XL"}}
+- "camperas para trabajo pesado" → {{"tipo_prenda": "sudadera"}}
+
+4. CAMISAS:
+- "camisas azules para oficina talle L" → {{"tipo_prenda": "camisa", "color": "azul", "talla": "L"}}
+- "shirts blancos" → {{"tipo_prenda": "camisa", "color": "blanco"}}
+- "camisas formales" → {{"tipo_prenda": "camisa"}}
+
+5. FALDAS:
+- "faldas negras talle S" → {{"tipo_prenda": "falda", "color": "negro", "talla": "S"}}
+- "polleras azules" → {{"tipo_prenda": "falda", "color": "azul"}}
+- "faldas para uniformes" → {{"tipo_prenda": "falda"}}
+
+CASOS ESPECIALES:
+- "para hombre, que colores tenes" (contexto: buscaba chaquetas) → {{"is_continuation": true, "specific_request": "colores disponibles"}}
+- "talle L" (contexto: viendo productos) → {{"is_continuation": true, "product_filters": {{"talla": "L"}}}}
+- "200 unidades" → {{"quantity": 200, "intent_type": "confirm_order"}}
+- "cambiar a 150" → {{"quantity": 150, "intent_type": "edit_order"}}
+
+PATRONES DE CONTINUACIÓN:
+Si el mensaje es corto y NO menciona tipo de prenda, pero el contexto indica una búsqueda previa:
+- "que colores tenes?" → buscar en historial el tipo de prenda y marcar is_continuation: true
+- "talle M" → agregar talla al filtro existente
+- "para construcción" → mantener tipo de prenda del contexto
 
 Responde SOLO con el JSON, sin explicaciones adicionales.
 """
@@ -454,7 +488,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     },
                     "quantity": quantity,
                     "total_price": product.precio_50_u * quantity,
-                    "stock_remaining": product.stock - quantity  # ✅ CORREGIDO
+                    "stock_remaining": product.stock - quantity
                 }
             }
             
@@ -568,7 +602,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "descripcion": product.descripcion if product.descripcion else 'Material de calidad premium',
                     "categoria": product.categoria if product.categoria else 'General'
                 })
-                total_stock += product.stock  # ✅ CORREGIDO
+                total_stock += product.stock
             
             return {
                 "operation": "check_stock",

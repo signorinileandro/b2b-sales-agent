@@ -479,24 +479,45 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             quantity = data.get("quantity", 50)
             product_filters = data.get("product_filters", {})
             
-            # ✅ USAR CAMPO CORRECTO: stock
+            print(f"🛒 Creando pedido: quantity={quantity}, filters={product_filters}")
+            
+            # ✅ NORMALIZAR FILTROS IGUAL QUE EN _search_products
+            for key in ["tipo_prenda", "color", "talla"]:
+                val = product_filters.get(key)
+                if isinstance(val, str):
+                    val_clean = val.strip().lower()
+                    if val_clean in ["null", "none", ""]:
+                        product_filters[key] = None
+                        print(f"🔄 Filtro normalizado en create_order: {key} = '{val}' → None")
+        
+            # ✅ BASE QUERY: solo productos con stock suficiente
             query = db.query(models.Product).filter(models.Product.stock >= quantity)
             
+            # ✅ APLICAR FILTROS SOLO SI NO SON None
             if product_filters.get("tipo_prenda"):
                 query = query.filter(models.Product.tipo_prenda.ilike(f"%{product_filters['tipo_prenda']}%"))
+                print(f"🔍 Filtro pedido: tipo_prenda ILIKE '%{product_filters['tipo_prenda']}%'")
+            
             if product_filters.get("color"):
                 query = query.filter(models.Product.color.ilike(f"%{product_filters['color']}%"))
+                print(f"🔍 Filtro pedido: color ILIKE '%{product_filters['color']}%'")
+            
             if product_filters.get("talla"):
                 query = query.filter(models.Product.talla.ilike(f"%{product_filters['talla']}%"))
+                print(f"🔍 Filtro pedido: talla ILIKE '%{product_filters['talla']}%'")
             
+            # Buscar primer producto que coincida
             product = query.first()
             
             if not product:
+                print("❌ No se encontró producto para el pedido")
                 return {
                     "operation": "create_order",
                     "success": False,
-                    "error": "No hay producto disponible que coincida con los filtros"
+                    "error": "No hay producto disponible que coincida con los filtros y tenga stock suficiente"
                 }
+            
+            print(f"✅ Producto encontrado para pedido: {product.name} (Stock: {product.stock})")
             
             # Crear pedido usando el CRUD existente
             order_data = schemas.OrderCreate(
@@ -507,6 +528,7 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             
             new_order = crud.create_order(db, order_data)
             
+            # ✅ AGREGAR DATOS DE WHATSAPP
             new_order.user_phone = user_phone
             if conversation_id:
                 new_order.conversation_id = conversation_id
@@ -620,9 +642,18 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
         try:
             product_filters = data.get("product_filters", {})
             
-            # ✅ USAR CAMPO CORRECTO: stock
+            # ✅ NORMALIZAR FILTROS
+            for key in ["tipo_prenda", "color", "talla"]:
+                val = product_filters.get(key)
+                if isinstance(val, str):
+                    val_clean = val.strip().lower()
+                    if val_clean in ["null", "none", ""]:
+                        product_filters[key] = None
+        
+            # ✅ BASE QUERY
             query = db.query(models.Product).filter(models.Product.stock > 0)
             
+            # ✅ APLICAR FILTROS SOLO SI NO SON None
             if product_filters.get("tipo_prenda"):
                 query = query.filter(models.Product.tipo_prenda.ilike(f"%{product_filters['tipo_prenda']}%"))
             if product_filters.get("color"):
@@ -641,8 +672,8 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "name": product.name,
                     "stock": product.stock,
                     "precio_50_u": product.precio_50_u,
-                    "descripcion": product.descripcion if product.descripcion else 'Material de calidad premium',
-                    "categoria": product.categoria if product.categoria else 'General'
+                    "descripcion": product.descripcion or 'Material de calidad premium',
+                    "categoria": product.categoria or 'General'
                 })
                 total_stock += product.stock
             

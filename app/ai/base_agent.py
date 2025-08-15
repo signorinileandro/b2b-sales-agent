@@ -20,8 +20,6 @@ class BaseAgent:
         self.model_cascade = [
             'gemini-1.5-pro-latest',
             'gemini-1.5-flash-latest',
-            'gemini-1.0-pro',
-            'gemma-7b' # Como último recurso, tiene cuota separada
         ]
         
         if not self.api_keys:

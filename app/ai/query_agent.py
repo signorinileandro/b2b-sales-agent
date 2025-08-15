@@ -774,12 +774,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             if not self.model:
                 if not self._try_next_key():
                     break
-            
+        
             try:
                 response = self.model.generate_content(
                     prompt,
                     generation_config=genai.types.GenerationConfig(
-                        temperature=0.1,  # Más determinístico para extracciones
+                        temperature=0.1,
                         max_output_tokens=500,
                     )
                 )
@@ -791,10 +791,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 print(f"❌ Error con key #{self.current_key_index + 1}: {e}")
                 
                 if "429" in error_str or "quota" in error_str:
+                    # Cambiar a siguiente key
                     if not self._try_next_key():
                         break
                     continue
                 else:
+                    # Error general, salir del loop
                     break
         
         return None

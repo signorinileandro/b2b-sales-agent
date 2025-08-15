@@ -1,480 +1,575 @@
-import os
-import json
 import google.generativeai as genai
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from .. import models
-from .query_agent import query_agent  
+import json
+import os
+from dotenv import load_dotenv
+import time
+
+# Cargar variables de entorno
+load_dotenv()
 
 class SalesAgent:
+    """Agente especializado en asesoramiento comercial y recomendaciones de venta"""
+    
     def __init__(self):
+        # ✅ USAR EL MISMO SISTEMA DE API KEYS QUE ConversationManager
         self.api_keys = self._load_api_keys()
         self.current_key_index = 0
-        self.model = None
-        self._setup_current_key()
-        self.context_memory: Dict[str, Dict] = {}
+        self.key_retry_delays = {}  # Para tracking de delays por key
+        
+        if not self.api_keys:
+            raise ValueError("No se encontraron GOOGLE_API_KEY en variables de entorno")
+        
+        # Configurar Gemini con la primera key válida
+        self._configure_gemini()
+        
+        print(f"💡 SalesAgent inicializado con {len(self.api_keys)} API keys")
+        
+        # Definir conocimiento de productos textiles
+        self.product_knowledge = {
+            "camiseta": {
+                "usos": ["uniformes empresariales", "promocionales", "eventos", "dotación personal"],
+                "materiales": ["algodón 100%", "poliéster", "mezcla algodón-poliéster"],
+                "ventajas": ["comodidad", "durabilidad", "fácil lavado", "personalizable"],
+                "sectores": ["construcción", "servicios", "retail", "hospitality"]
+            },
+            "pantalón": {
+                "usos": ["uniformes trabajo", "dotación laboral", "seguridad industrial"],
+                "materiales": ["drill", "gabardina", "denim", "poliéster"],
+                "ventajas": ["resistencia", "durabilidad", "profesionalismo", "comodidad"],
+                "sectores": ["construcción", "industria", "servicios", "oficina"]
+            },
+            "sudadera": {
+                "usos": ["construcción", "trabajo exterior", "promocionales", "deportivo"],
+                "materiales": ["algodón afelpado", "poliéster", "mezclas"],
+                "ventajas": ["abrigo", "comodidad", "durabilidad", "versátil"],
+                "sectores": ["construcción", "logística", "deportivo", "promocional"]
+            },
+            "camisa": {
+                "usos": ["oficina", "atención cliente", "eventos", "uniformes formales"],
+                "materiales": ["algodón", "poliéster", "mezclas anti-arrugas"],
+                "ventajas": ["profesionalismo", "elegancia", "comodidad", "fácil planchado"],
+                "sectores": ["oficina", "servicios", "hospitality", "retail"]
+            },
+            "falda": {
+                "usos": ["uniformes femeninos", "oficina", "servicios", "hospitality"],
+                "materiales": ["gabardina", "poliéster", "mezclas"],
+                "ventajas": ["profesionalismo", "comodidad", "versatilidad", "elegancia"],
+                "sectores": ["oficina", "servicios", "hospitality", "retail"]
+            }
+        }
     
-    def _load_api_keys(self):
+    def _load_api_keys(self) -> List[str]:
+        """Carga todas las API keys disponibles desde el .env"""
         api_keys = []
-        for i in range(1, 11):
+        
+        # Buscar todas las keys que sigan el patrón GOOGLE_API_KEY_X
+        for i in range(1, 10):  # Buscar hasta GOOGLE_API_KEY_9
             key = os.getenv(f"GOOGLE_API_KEY_{i}")
             if key:
-                api_keys.append(key.strip())
+                api_keys.append(key)
         
-        if not api_keys:
-            main_key = os.getenv("GOOGLE_API_KEY")
-            if main_key:
-                api_keys.append(main_key)
+        # También buscar la key genérica por compatibilidad
+        generic_key = os.getenv("GEMINI_API_KEY")
+        if generic_key and generic_key not in api_keys:
+            api_keys.append(generic_key)
         
         return api_keys
     
-    def _setup_current_key(self):
-        if self.current_key_index < len(self.api_keys):
+    def _configure_gemini(self):
+        """Configura Gemini con la API key actual"""
+        current_key = self.api_keys[self.current_key_index]
+        genai.configure(api_key=current_key)
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        print(f"💡 SalesAgent configurado con API key #{self.current_key_index + 1}")
+    
+    def _switch_to_next_key(self):
+        """Cambia a la siguiente API key disponible"""
+        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+        self._configure_gemini()
+        print(f"💡🔄 SalesAgent cambiado a API key #{self.current_key_index + 1}")
+    
+    async def _make_gemini_request_with_fallback(self, prompt: str, **kwargs):
+        """Hace petición a Gemini con fallback automático entre API keys"""
+        
+        max_retries = len(self.api_keys)  # Intentar con todas las keys
+        retry_count = 0
+        
+        while retry_count < max_retries:
             try:
-                current_key = self.api_keys[self.current_key_index]
-                genai.configure(api_key=current_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
-                print(f"💬 Sales Agent usando API Key #{self.current_key_index + 1}")
-                return True
-            except:
-                return False
-        return False
-    
-    def _try_next_key(self):
-        self.current_key_index += 1
-        return self._setup_current_key()
-
-    async def process_message(self, user_id: str, message: str) -> str:
-        """Procesa mensaje usando Query Agent + Sales Agent coordinados"""
-        
-        print(f"🤖 Procesando mensaje de {user_id}: {message}")
-        
-        # 1. Obtener contexto de conversación
-        conversation = await self.get_or_create_conversation(user_id)
-        context = self.get_or_create_context(user_id)
-        
-        # Guardar mensaje del usuario
-        await self.save_message(conversation.id, "user", message)
-        
-        # 2. ✅ EXTRAER INTENCIÓN CON QUERY AGENT
-        intent = await query_agent.extract_structured_intent(message, context)
-        print(f"🎯 Intención detectada: {intent['intent_type']} (confianza: {intent['confidence']})")
-        
-        # ✅ COMPLETAR FILTROS CON CONTEXTO SI FALTA INFORMACIÓN
-        if intent['intent_type'] == 'confirm_order':
-            product_filters = intent['extracted_data']['product_filters']
-            
-            # Si no especifica tipo de prenda, usar el último buscado
-            if not product_filters.get('tipo_prenda') and context.get('last_searched_products'):
-                last_products = context['last_searched_products']
-                if last_products:
-                    last_type = last_products[0].get('tipo_prenda')
-                    product_filters['tipo_prenda'] = last_type
-                    print(f"🔄 Usando tipo del contexto: {last_type}")
-            
-            # Si no especifica color, usar el del contexto si es específico
-            if not product_filters.get('color') and 'last_search_query' in context:
-                query = context['last_search_query'].lower()
-                for color in ["verde", "azul", "negro", "blanco", "rojo", "amarillo", "gris"]:
-                    if color in query:
-                        product_filters['color'] = color
-                        print(f"🔄 Usando color del contexto: {color}")
-                        break
-            
-            # Actualizar intent con filtros completados
-            intent['extracted_data']['product_filters'] = product_filters
-        
-        # 3. ✅ EJECUTAR OPERACIÓN EN BASE DE DATOS SI ES NECESARIO
-        db_result = None
-        if intent['intent_type'] in ['search_products', 'confirm_order', 'edit_order', 'ask_stock']:
-           
-            if intent['intent_type'] == 'confirm_order':
-                db_result = await query_agent.execute_database_operation(intent, user_id, conversation.id)
-            else:
-                db_result = await query_agent.execute_database_operation(intent, user_id)
-            
-            # ✅ PLAN B: si no encontró nada, volver a buscar sin filtros estrictos
-            if (
-                intent['intent_type'] == 'search_products'
-                and db_result
-                and db_result.get('success')
-                and db_result['data'].get('total_found', 0) == 0
-            ):
-                print("🔄 Fallback: buscando alternativas sin filtros estrictos...")
+                current_key_num = self.current_key_index + 1
+                print(f"💡🔍 SalesAgent usando API Key #{current_key_num}")
                 
-                # Limpiar tipo_prenda para ampliar búsqueda
-                relaxed_filters = dict(intent['extracted_data'])
-                relaxed_filters["product_filters"] = {
-                    k: v for k, v in relaxed_filters["product_filters"].items() if k != "tipo_prenda"
-                }
+                # Verificar si esta key tiene delay de retry
+                key_id = f"sales_key_{self.current_key_index}"
+                if key_id in self.key_retry_delays:
+                    retry_time = self.key_retry_delays[key_id]
+                    if time.time() < retry_time:
+                        print(f"💡⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
+                        self._switch_to_next_key()
+                        retry_count += 1
+                        continue
                 
-                # Crear intent modificado para la búsqueda ampliada
-                fallback_intent = dict(intent)
-                fallback_intent['extracted_data'] = relaxed_filters
+                # Intentar la petición
+                response = self.model.generate_content(prompt, **kwargs)
                 
-                try:
-                    fallback_result = await query_agent._search_products(relaxed_filters)
-                    
-                    # Si encontró algo, reemplazar db_result por este
-                    if fallback_result and fallback_result.get('success') and fallback_result['data']['total_found'] > 0:
-                        print(f"✅ Fallback encontró {fallback_result['data']['total_found']} productos")
-                        # Marcar que fue un fallback para ajustar respuesta
-                        fallback_result['is_fallback'] = True
-                        fallback_result['original_search'] = intent['extracted_data']['product_filters'].get('tipo_prenda', 'productos')
-                        db_result = fallback_result
-                    else:
-                        print("⚠️ Fallback tampoco encontró productos")
-                except Exception as e:
-                    print(f"❌ Error en fallback search: {e}")
-            
-            print(f"🗄️ Operación DB: {db_result.get('operation', 'none')} - Éxito: {db_result.get('success', False)}")
-            
-            # ✅ AGREGAR DEBUG MÁS DETALLADO
-            if db_result and db_result.get('success') and db_result.get('data'):
-                products = db_result['data'].get('products', [])
-                print(f"📊 Productos encontrados en BD: {len(products)}")
-                if products:
-                    print(f"🔍 Primer producto: {products[0]}")
-                else:
-                    print(f"⚠️ Lista de productos vacía")
-            
-            # Actualizar contexto con resultados
-            if db_result.get('success') and db_result.get('data'):
-                if 'products' in db_result['data']:
-                    context['last_searched_products'] = db_result['data']['products']
-                if intent['intent_type'] == 'confirm_order':
-                    context['last_order_created'] = db_result['data']
-                if intent['intent_type'] == 'edit_order':
-                    context['last_order_edited'] = db_result['data']
-        
-        # DEBUG - Mostrar resultado de DB si existe
-        if db_result:
-            print(f"🔍 DEBUG - DB Result SUCCESS: {db_result.get('success')}")
-            print(f"🔍 DEBUG - DB Result OPERATION: {db_result.get('operation')}")
-            if db_result.get('data'):
-                data_summary = {k: len(v) if isinstance(v, list) else str(v)[:50] for k, v in db_result['data'].items()}
-                print(f"🔍 DEBUG - DB Result DATA: {data_summary}")
-        else:
-            print(f"🔍 DEBUG - No DB result for intent: {intent['intent_type']}")
-        
-        # 4. ✅ GENERAR RESPUESTA NATURAL CON SALES AGENT
-        sales_response = await self._generate_natural_response(
-            message, context, intent, db_result
-        )
-        
-        # 5. Guardar respuesta y actualizar contexto
-        await self.save_message(conversation.id, "assistant", sales_response, intent)
-        
-        context["conversation_history"].append({
-            "user": message,
-            "assistant": sales_response,
-            "intent": intent['intent_type']
-        })
-        
-        # Mantener solo últimas 5 interacciones
-        if len(context["conversation_history"]) > 5:
-            context["conversation_history"] = context["conversation_history"][-5:]
-        
-        # En process_message, DESPUÉS de ejecutar search_products, agregar:
-        if intent['intent_type'] == 'search_products' and db_result and db_result.get('success'):
-            # Guardar consulta para contexto
-            filters = intent['extracted_data']['product_filters']
-            search_terms = []
-            if filters.get('tipo_prenda'):
-                search_terms.append(filters['tipo_prenda'])
-            if filters.get('color'):
-                search_terms.append(filters['color'])
-            if filters.get('talla'):
-                search_terms.append(f"talla {filters['talla']}")
-            
-            context['last_search_query'] = " ".join(search_terms)
-            print(f"💾 Guardado en contexto: {context['last_search_query']}")
-        
-        return sales_response
-    
-    async def _generate_natural_response(self, user_message: str, context: Dict, intent: Dict, db_result: Dict = None) -> str:
-        """Genera respuesta natural basada en intención y resultados de DB"""
-        
-        # ✅ VERIFICAR SI HAY DATOS REALES DE LA BD
-        if db_result and db_result.get("success") and db_result.get("data"):
-            data = db_result["data"]
-            operation = db_result["operation"]
-            
-            # ✅ RESPUESTA BASADA EN DATOS REALES
-            if operation == "search_products" and data.get("products"):
-                products = data["products"]
-                
-                original_term = db_result.get("extracted_data", {}).get("original_term")
-                mapped_term = db_result.get("extracted_data", {}).get("mapped_term")
-                is_fallback = db_result.get("is_fallback", False)
-                original_search = db_result.get("original_search", "")
-                
-                if len(products) == 0:
-                    if original_term and mapped_term:
-                        return f"¡Hola! Vi que buscás **{original_term}** para construcción. 👷‍♂️\n\n" \
-                               f"Como no tengo {original_term} específicas, te muestro **{mapped_term}s** que son perfectas para trabajo pesado y muy resistentes.\n\n" \
-                               f"¿Te interesa ver qué opciones tengo en **{mapped_term}s de trabajo**?"
-                    else:
-                        tipo_solicitado = db_result.get('data', {}).get('filters_applied', {}).get('tipo_prenda', '')
-                        if tipo_solicitado:
-                            return f"No encontré {tipo_solicitado}s que coincidan con tu búsqueda específica. 🔍\n\n" \
-                                   f"**¿Te interesa ver otros productos disponibles?**\n" \
-                                   f"• **Camisetas** - Cómodas y resistentes\n" \
-                                   f"• **Pantalones** - Ideales para trabajo\n" \
-                                   f"• **Sudaderas** - Perfectas para construcción\n" \
-                                   f"• **Camisas** - Para uso profesional\n" \
-                                   f"• **Faldas** - Línea femenina\n\n" \
-                                   f"¿Cuál te sirve más?"
-                        else:
-                            return "¿En qué tipo de prenda estás interesado? Tengo **camisetas**, **pantalones**, **sudaderas**, **camisas** y **faldas** disponibles."
-                
-                # ✅ RESPUESTA MEJORADA PARA FALLBACK
-                if is_fallback and original_search:
-                    header = f"No encontré **{original_search}** específicamente, pero te muestro productos similares que tengo disponibles:\n\n"
-                elif original_term and mapped_term:
-                    header = f"¡Perfecto! Como no tengo {original_term} disponibles, te muestro las mejores **{mapped_term}s** que tengo:\n\n"
-                else:
-                    header = f"¡Excelente! Te muestro lo que tengo disponible:\n\n"
-
-                response = header
-
-                # Mostrar SOLO 3-4 productos principales con info clave
-                for i, product in enumerate(products[:4], 1):
-                    response += f"**{i}. {product['color'].title()} - Talla {product['talla']}** (#{product['id']})\n"
-                    response += f"   📦 Stock: **{product['stock']} unidades**\n"
-                    response += f"   💰 Precio: **${product['precio_50_u']:,.0f}** (50+ un.) | **${product['precio_100_u']:,.0f}** (100+ un.)\n\n"
-
-                # RESUMEN MUY DIRECTO
-                unique_colors = sorted(set(p['color'] for p in products))
-                unique_talles = sorted(set(p['talla'] for p in products))
-                unique_types = sorted(set(p['tipo_prenda'] for p in products))
-                total_stock = sum(p['stock'] for p in products)
-
-                response += f"📋 **RESUMEN:**\n"
-                if is_fallback:
-                    response += f"• **Tipos:** {', '.join(unique_types)}\n"
-                response += f"• **Colores:** {', '.join(unique_colors)}\n"
-                response += f"• **Talles:** {', '.join(unique_talles)}\n" 
-                response += f"• **Stock total:** {total_stock:,} unidades\n"
-                response += f"• **Precio desde:** ${min(p['precio_200_u'] for p in products):,.0f} (200+ un.)\n\n"
-
-                # ✅ LLAMADA A LA ACCIÓN DIRECTA
-                response += f"🎯 **¿Cuántas unidades necesitás?** Te armo el presupuesto enseguida.\n"
-                response += f"💡 *A mayor cantidad, mejor precio por unidad.*"
-
-                return response
-            
-            elif operation == "check_stock" and data.get("products"):
-                products = data["products"]
-                if len(products) == 0:
-                    return "En este momento no tengo stock disponible para esa búsqueda específica. ¿Te interesa ver otros productos similares?"
-                
-                # ✅ RESPUESTA ESPECÍFICA PARA CONSULTA DE STOCK
-                unique_types = set()
-                unique_colors = set()
-                unique_talles = set()
-                total_stock = 0
-                
-                response = f"📋 **STOCK DISPONIBLE:**\n\n"
-                
-                for product in products:
-                    unique_types.add(product.get('name', '').split(' ')[0])  # Tipo de prenda
-                    unique_colors.add(product.get('name', '').split(' ')[1] if len(product.get('name', '').split(' ')) > 1 else 'N/A')
-                    unique_talles.add(product.get('name', '').split(' - ')[1] if ' - ' in product.get('name', '') else 'N/A')
-                    total_stock += product.get('stock', 0)
-                    
-                    # Extraer color y talla del nombre
-                    product_name = product.get('name', '')
-                    if ' - ' in product_name:
-                        base_name, talla = product_name.split(' - ', 1)
-                        if ' ' in base_name:
-                            parts = base_name.split(' ')
-                            tipo = parts[0]
-                            color = parts[1] if len(parts) > 1 else 'N/A'
-                        else:
-                            tipo = base_name
-                            color = 'N/A'
-                    else:
-                        tipo = product_name
-                        color = 'N/A'
-                        talla = 'N/A'
-                    
-                    response += f"• **{tipo} {color} - {talla}**\n"
-                    response += f"  📦 Stock: **{product['stock']} unidades**\n"
-                    response += f"  💰 Precio: **${product['precio_50_u']:,.0f}** (50+ un.)\n\n"
-                
-                # ✅ RESPUESTA ESPECÍFICA A LA CONSULTA
-                if any('azul' in p.get('name', '').lower() and 'l' in p.get('name', '').lower() for p in products):
-                    stock_azul_l = [p for p in products if 'azul' in p.get('name', '').lower() and ' - l' in p.get('name', '').lower()]
-                    if stock_azul_l:
-                        stock_especifico = stock_azul_l[0]['stock']
-                        response += f"🎯 **RESPUESTA ESPECÍFICA:** Te quedan **{stock_especifico} unidades** de buzos azules en talle L.\n\n"
-                
-                response += f"📊 **RESUMEN:**\n"
-                response += f"• **Stock total consultado:** {total_stock:,} unidades\n"
-                response += f"• **Productos diferentes:** {len(products)}\n\n"
-                response += "¿Te interesa alguno en particular?"
+                # Si llegamos aquí, la petición fue exitosa
+                # Limpiar cualquier delay previo para esta key
+                if key_id in self.key_retry_delays:
+                    del self.key_retry_delays[key_id]
                 
                 return response
-            
-            elif operation == "create_order" and data.get("order_id"):
-                order = data
-                return f"¡PEDIDO CONFIRMADO! 🎉\n\n" \
-                       f"✅ **{order['product']['name']}**\n" \
-                       f"📦 Cantidad: {order['quantity']} unidades\n" \
-                       f"💰 Total: ${order['total_price']:,}\n" \
-                       f"📋 ID de pedido: {order['order_id']}\n\n" \
-                       f"Stock restante: {order['stock_remaining']} unidades\n\n" \
-                       f"¿Necesitás algo más para tu empresa?"
-            
-            elif operation == "edit_order" and data.get("order_id"):
-                return f"✅ **PEDIDO ACTUALIZADO**\n\n" \
-                       f"📋 Pedido #{data['order_id']}\n" \
-                       f"📦 Cantidad anterior: {data['old_quantity']}\n" \
-                       f"📦 Nueva cantidad: {data['new_quantity']}\n" \
-                       f"💰 Nuevo total: ${data['new_total_price']:,}\n\n" \
-                       f"¡Cambio realizado exitosamente!"
-        
-        # ✅ SI HAY ERROR EN LA BD, USAR LA INFO DEL ERROR
-        elif db_result and not db_result.get("success"):
-            error_msg = db_result.get("error", "Error desconocido")
-            
-            if "no hay producto" in error_msg.lower():
-                return "No encontré productos que coincidan con lo que buscás. ¿Podrías ser más específico sobre el tipo, color o talla que necesitás?"
-            elif "no hay pedidos recientes" in error_msg.lower():
-                return "No encontré pedidos recientes tuyos para modificar. ¿Querés hacer un nuevo pedido?"
-            elif "ya pasaron" in error_msg.lower():
-                return f"Lo siento, {error_msg}. ¿Querés hacer un nuevo pedido en su lugar?"
-            else:
-                return f"Tuve un problemita técnico: {error_msg}. ¿Podés intentar de nuevo?"
-        
-        # ✅ FALLBACK: USAR GEMINI SOLO PARA CONVERSACIÓN GENERAL
-        prompt = f"""
-Eres Ventix, un vendedor B2B argentino de textiles con 15 años de experiencia.
-
-El cliente dice: "{user_message}"
-
-IMPORTANTE: NO INVENTES productos, precios ni stock. Solo responde de forma conversacional y ofrece ayuda.
-
-Si pregunta por productos específicos, dile que vas a consultarlo en el sistema.
-Si es un saludo o pregunta general, responde de forma amigable y ofrece ayuda.
-
-Mantente en personaje de vendedor experimentado argentino.
-"""
-        
-        try:
-            response = await self._make_gemini_request(prompt)
-            if response:
-                return response
-                
-        except Exception as e:
-            print(f"❌ Error generando respuesta: {e}")
-        
-        # Fallback final
-        return "¡Hóla! Soy Ventix, especialista en textiles. ¿En qué te puedo ayudar hoy?"
-    
-    async def _make_gemini_request(self, prompt: str) -> str:
-        """Hace request a Gemini con rotación de keys"""
-        
-        max_attempts = len(self.api_keys)
-        
-        for attempt in range(max_attempts):
-            if not self.model:
-                if not self._try_next_key():
-                    break
-            
-            try:
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.8,  # Más creativo para respuestas naturales
-                        max_output_tokens=800,
-                    )
-                )
-                
-                return response.text
                 
             except Exception as e:
                 error_str = str(e).lower()
-                print(f"❌ Error con key #{self.current_key_index + 1}: {e}")
+                print(f"💡❌ Error con API key #{current_key_num}: {e}")
                 
-                if "429" in error_str or "quota" in error_str:
-                    if not self._try_next_key():
-                        break
+                # Verificar si es error de cuota
+                if "quota" in error_str or "exceeded" in error_str or "429" in error_str:
+                    print(f"💡🚫 API Key #{current_key_num} agotó su cuota")
+                    
+                    # Poner esta key en cooldown por 1 hora
+                    self.key_retry_delays[key_id] = time.time() + 3600
+                    
+                    # Cambiar a la siguiente key
+                    self._switch_to_next_key()
+                    retry_count += 1
                     continue
+                    
+                elif "rate limit" in error_str or "rate_limit" in error_str:
+                    print(f"💡⏳ API Key #{current_key_num} tiene rate limiting")
+                    
+                    # Cooldown más corto para rate limiting (5 minutos)
+                    self.key_retry_delays[key_id] = time.time() + 300
+                    
+                    # Cambiar a la siguiente key
+                    self._switch_to_next_key()
+                    retry_count += 1
+                    continue
+                    
                 else:
-                    break
+                    # Error no relacionado con cuota, intentar una vez más con la siguiente key
+                    print(f"💡🔄 Error general, intentando con siguiente key")
+                    self._switch_to_next_key()
+                    retry_count += 1
+                    continue
         
-        return None
-    
-    # ... resto de métodos (get_or_create_conversation, save_message, get_or_create_context) ...
-    
-    async def get_or_create_conversation(self, user_phone: str):
-        """Obtiene o crea conversación en la base de datos"""
+        # Si llegamos aquí, todas las keys fallaron
+        raise Exception(f"SalesAgent: Todas las API keys ({len(self.api_keys)}) han fallado o están en cooldown")
+
+    async def handle_sales_advice(self, message: str, conversation: Dict) -> str:
+        """Maneja consultas de asesoramiento comercial y recomendaciones"""
         
-        db = SessionLocal()
         try:
-            conversation = db.query(models.Conversation).filter(
-                models.Conversation.user_phone == user_phone,
-                models.Conversation.status == "active"
-            ).first()
+            print(f"💡 SalesAgent procesando: {message}")
             
-            if not conversation:
-                conversation = models.Conversation(
-                    user_phone=user_phone,
-                    status="active"
-                )
-                db.add(conversation)
-                db.commit()
-                db.refresh(conversation)
-                print(f"💬 Nueva conversación: {conversation.id}")
+            # 1. Analizar qué tipo de asesoramiento necesita
+            advice_type = await self._analyze_advice_request(message, conversation)
             
-            return conversation
-        finally:
-            db.close()
-    
-    async def save_message(self, conversation_id: int, message_type: str, content: str, intent_data: dict = None):
-        """Guarda mensaje en la base de datos"""
-        
-        db = SessionLocal()
-        try:
-            products_json = None
-            intent_detected = None
+            # 2. Obtener información relevante del inventario
+            relevant_products = await self._get_relevant_products_for_advice(advice_type, conversation)
             
-            if intent_data:
-                intent_detected = intent_data.get("intent_type", "general")
-                if intent_data.get("extracted_data", {}).get("products"):
-                    products_json = json.dumps(intent_data["extracted_data"]["products"][:3])
+            # 3. Generar recomendación personalizada
+            response = await self._generate_sales_advice(message, advice_type, relevant_products, conversation)
             
-            message = models.ConversationMessage(
-                conversation_id=conversation_id,
-                message_type=message_type,
-                content=content,
-                products_shown=products_json,
-                intent_detected=intent_detected
-            )
-            
-            db.add(message)
-            db.commit()
-            print(f"💾 Mensaje guardado: {message_type}")
+            return response
             
         except Exception as e:
-            print(f"❌ Error guardando mensaje: {e}")
+            print(f"💡❌ Error en SalesAgent: {e}")
+            return "Disculpa, tuve un problema generando recomendaciones. ¿Podrías contarme más específicamente qué necesitás para tu empresa?"
+    
+    async def _analyze_advice_request(self, message: str, conversation: Dict) -> Dict:
+        """Analiza qué tipo de asesoramiento comercial necesita"""
+        
+        # Extraer contexto de la conversación
+        recent_messages = ""
+        for msg in conversation.get('messages', [])[-3:]:  # Últimos 3 mensajes
+            role = "Usuario" if msg['role'] == 'user' else "Bot"
+            recent_messages += f"{role}: {msg['content']}\n"
+        
+        # Información de pedidos previos para personalización
+        previous_orders = ""
+        if conversation.get('recent_orders'):
+            previous_orders = "Pedidos anteriores:\n"
+            for order in conversation.get('recent_orders', [])[:3]:
+                previous_orders += f"- Cantidad: {order['quantity']}, Status: {order['status']}\n"
+        
+        prompt = f"""Analiza qué tipo de asesoramiento comercial necesita este cliente B2B:
+
+CONVERSACIÓN RECIENTE:
+{recent_messages}
+
+MENSAJE ACTUAL: "{message}"
+
+{previous_orders}
+
+Sectores típicos: construcción, servicios, retail, oficina, hospitality, industria
+Productos disponibles: camisetas, pantalones, sudaderas, camisas, faldas
+
+Responde SOLO con JSON válido:
+{{
+    "advice_type": "product_recommendation" | "sector_specific" | "quantity_advice" | "use_case_advice" | "cost_optimization" | "material_advice" | "general_business",
+    "sector_context": "construcción|servicios|retail|oficina|hospitality|industria|unclear",
+    "specific_products": ["lista_de_productos_mencionados"],
+    "business_need": "uniformes|dotación|promocional|eventos|seguridad|unclear",
+    "budget_concern": true_si_menciona_precio_o_presupuesto,
+    "quantity_context": "small_batch|medium_volume|large_scale|unclear",
+    "urgency": "urgent|normal|flexible",
+    "personalization_hints": ["detalles_específicos_del_negocio"]
+}}
+
+EJEMPLOS:
+- "qué me recomendás para mi constructora?" → {{"advice_type": "sector_specific", "sector_context": "construcción", "business_need": "dotación"}}
+- "cuál es mejor para uniformes?" → {{"advice_type": "product_recommendation", "business_need": "uniformes"}}
+- "necesito algo económico para 200 empleados" → {{"advice_type": "cost_optimization", "quantity_context": "large_scale", "budget_concern": true}}
+- "qué tela dura más?" → {{"advice_type": "material_advice"}}"""
+
+        try:
+            response = await self._make_gemini_request_with_fallback(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.2,  # Algo más creativo para asesoramiento
+                    max_output_tokens=250,
+                )
+            )
+            
+            # Limpiar y parsear respuesta
+            response_clean = response.text.strip()
+            if response_clean.startswith("```json"):
+                response_clean = response_clean[7:-3]
+            elif response_clean.startswith("```"):
+                response_clean = response_clean[3:-3]
+            
+            parsed_advice = json.loads(response_clean)
+            print(f"💡🎯 Análisis de asesoramiento: {parsed_advice}")
+            
+            return parsed_advice
+            
+        except Exception as e:
+            print(f"💡❌ Error analizando asesoramiento: {e}")
+            
+            # Fallback basado en palabras clave
+            message_lower = message.lower()
+            
+            # Detectar sector
+            sector = "unclear"
+            if any(word in message_lower for word in ["construcción", "construcción", "obra", "albañil"]):
+                sector = "construcción"
+            elif any(word in message_lower for word in ["oficina", "empresa", "corporativo"]):
+                sector = "oficina"
+            elif any(word in message_lower for word in ["restaurant", "hotel", "servicio"]):
+                sector = "hospitality"
+            elif any(word in message_lower for word in ["tienda", "retail", "comercio"]):
+                sector = "retail"
+            
+            # Detectar tipo de consulta
+            if any(word in message_lower for word in ["recomendás", "mejor", "conviene"]):
+                advice_type = "product_recommendation"
+            elif any(word in message_lower for word in ["precio", "económico", "barato", "costo"]):
+                advice_type = "cost_optimization"
+            elif any(word in message_lower for word in ["material", "tela", "calidad", "dura"]):
+                advice_type = "material_advice"
+            else:
+                advice_type = "general_business"
+            
+            return {
+                "advice_type": advice_type,
+                "sector_context": sector,
+                "specific_products": [],
+                "business_need": "unclear",
+                "budget_concern": "económico" in message_lower,
+                "quantity_context": "unclear",
+                "urgency": "normal",
+                "personalization_hints": []
+            }
+    
+    async def _get_relevant_products_for_advice(self, advice_type: Dict, conversation: Dict) -> Dict:
+        """Obtiene productos relevantes del inventario para el asesoramiento"""
+        
+        db = SessionLocal()
+        try:
+            # Base query: productos con stock > 0
+            query = db.query(models.Product).filter(models.Product.stock > 0)
+            
+            # Filtrar según el contexto del asesoramiento
+            sector = advice_type.get("sector_context", "")
+            business_need = advice_type.get("business_need", "")
+            
+            # Si hay productos específicos mencionados, priorizarlos
+            specific_products = advice_type.get("specific_products", [])
+            if specific_products:
+                # Buscar productos específicos mencionados
+                for product_type in specific_products:
+                    query = query.filter(models.Product.tipo_prenda.ilike(f"%{product_type}%"))
+            
+            # Limitar a productos más relevantes
+            products = query.order_by(models.Product.stock.desc()).limit(15).all()
+            
+            # Organizar productos por categoría para el asesoramiento
+            products_by_type = {}
+            total_options = 0
+            
+            for product in products:
+                tipo = product.tipo_prenda.lower()
+                if tipo not in products_by_type:
+                    products_by_type[tipo] = []
+                
+                product_data = {
+                    "id": product.id,
+                    "name": product.name,
+                    "tipo_prenda": product.tipo_prenda,
+                    "color": product.color,
+                    "talla": product.talla,
+                    "stock": product.stock,
+                    "precio_50_u": product.precio_50_u,
+                    "precio_100_u": product.precio_100_u,
+                    "precio_200_u": product.precio_200_u,
+                    "descripcion": product.descripcion or "Material de calidad premium",
+                    "categoria": product.categoria or "General"
+                }
+                
+                products_by_type[tipo].append(product_data)
+                total_options += 1
+            
+            print(f"💡📊 Productos obtenidos para asesoramiento: {total_options} opciones en {len(products_by_type)} categorías")
+            
+            return {
+                "products_by_type": products_by_type,
+                "total_products": total_options,
+                "advice_context": advice_type
+            }
+            
+        except Exception as e:
+            print(f"💡❌ Error obteniendo productos para asesoramiento: {e}")
+            return {
+                "products_by_type": {},
+                "total_products": 0,
+                "advice_context": advice_type,
+                "error": str(e)
+            }
         finally:
             db.close()
     
-    def get_or_create_context(self, user_id: str) -> Dict:
-        """Obtiene o crea contexto de conversación"""
-        if user_id not in self.context_memory:
-            self.context_memory[user_id] = {
-                "conversation_history": [],
-                "last_searched_products": [],
-                "last_search_query": "",
-                "last_order_created": None,
-                "last_order_edited": None
-            }
-        return self.context_memory[user_id]
+    async def _generate_sales_advice(self, message: str, advice_type: Dict, products_data: Dict, conversation: Dict) -> str:
+        """Genera asesoramiento comercial personalizado"""
+        
+        products_by_type = products_data.get("products_by_type", {})
+        total_products = products_data.get("total_products", 0)
+        
+        # Si no hay productos disponibles
+        if total_products == 0:
+            return "En este momento no tengo productos disponibles para hacerte recomendaciones específicas. " \
+                   "¿Hay algún producto particular que te interese que pueda conseguir?"
+        
+        # Obtener información específica del sector/uso
+        sector_context = advice_type.get("sector_context", "unclear")
+        advice_type_str = advice_type.get("advice_type", "general_business")
+        budget_concern = advice_type.get("budget_concern", False)
+        
+        # Construir contexto de productos para Gemini
+        products_context = self._build_products_context_for_gemini(products_by_type)
+        
+        # Construir contexto de conocimiento sectorial
+        sector_knowledge = self._get_sector_knowledge(sector_context)
+        
+        prompt = f"""Eres un asesor comercial experto en textiles B2B. Genera una recomendación personalizada:
+
+CONSULTA DEL CLIENTE: "{message}"
+
+CONTEXTO DEL CLIENTE:
+- Sector: {sector_context}
+- Tipo de consulta: {advice_type_str}
+- Preocupación por presupuesto: {budget_concern}
+- Necesidad de negocio: {advice_type.get('business_need', 'unclear')}
+
+CONOCIMIENTO SECTORIAL:
+{sector_knowledge}
+
+PRODUCTOS DISPONIBLES:
+{products_context}
+
+INSTRUCCIONES:
+1. Genera una respuesta profesional y consultiva
+2. Recomienda productos específicos basado en el sector/uso
+3. Incluye precios y cantidades cuando sea relevante
+4. Menciona ventajas específicas para su negocio
+5. Sugiere combinaciones inteligentes de productos
+6. Si hay preocupación por presupuesto, destaca opciones económicas
+7. Incluye consejos prácticos de implementación
+8. Termina con una pregunta para continuar la conversación
+
+FORMATO DE RESPUESTA:
+- Saludo consultivo
+- Recomendación principal con justificación
+- Opciones específicas con precios
+- Ventajas para su sector
+- Consejo práctico adicional
+- Pregunta de seguimiento
+
+TONO: Profesional, consultivo, orientado a soluciones empresariales"""
+
+        try:
+            response = await self._make_gemini_request_with_fallback(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,  # Creativo pero coherente
+                    max_output_tokens=600,
+                )
+            )
+            
+            advice_response = response.text.strip()
+            
+            # Agregar emoji y estructura si es necesario
+            if not advice_response.startswith("💡"):
+                advice_response = f"💡 **ASESORAMIENTO COMERCIAL**\n\n{advice_response}"
+            
+            return advice_response
+            
+        except Exception as e:
+            print(f"💡❌ Error generando asesoramiento: {e}")
+            
+            # Fallback con recomendación básica basada en el sector
+            return self._generate_fallback_advice(advice_type, products_by_type, message)
+    
+    def _build_products_context_for_gemini(self, products_by_type: Dict) -> str:
+        """Construye contexto de productos para Gemini"""
+        
+        context = ""
+        for tipo, products in products_by_type.items():
+            context += f"\n{tipo.upper()}S DISPONIBLES:\n"
+            
+            # Mostrar hasta 3 productos por tipo para no sobrecargar
+            for product in products[:3]:
+                context += f"- {product['name']} ({product['color']} - {product['talla']})\n"
+                context += f"  Stock: {product['stock']} unidades\n"
+                context += f"  Precios: ${product['precio_50_u']:,.0f} (50+) | ${product['precio_100_u']:,.0f} (100+) | ${product['precio_200_u']:,.0f} (200+)\n"
+            
+            if len(products) > 3:
+                context += f"  ... y {len(products) - 3} opciones más en {tipo}s\n"
+            context += "\n"
+        
+        return context
+    
+    def _get_sector_knowledge(self, sector: str) -> str:
+        """Obtiene conocimiento específico del sector"""
+        
+        sector_info = {
+            "construcción": """
+CONSTRUCCIÓN:
+- Priorizan durabilidad y resistencia al desgaste
+- Necesitan ropa cómoda para trabajo físico intenso
+- Importante: fácil lavado y secado rápido
+- Colores recomendados: azul, gris, verde (ocultan manchas)
+- Productos clave: sudaderas, pantalones resistentes, camisetas básicas
+- Volúmenes típicos: 50-200 unidades por pedido
+""",
+            "oficina": """
+OFICINA/CORPORATIVO:
+- Imagen profesional es prioridad
+- Comodidad para trabajo sedentario
+- Colores corporativos: azul, blanco, gris, negro
+- Productos clave: camisas, pantalones formales, faldas
+- Consideran personalización con logos
+- Volúmenes típicos: 20-100 unidades por pedido
+""",
+            "servicios": """
+SERVICIOS:
+- Equilibrio entre profesionalismo y practicidad
+- Interacción con clientes requiere buena imagen
+- Fácil mantenimiento y lavado
+- Productos clave: camisetas uniformes, camisas, pantalones
+- Personalización con logos empresariales
+- Volúmenes típicos: 30-150 unidades por pedido
+""",
+            "hospitality": """
+HOSPITALITY (Hoteles/Restaurantes):
+- Imagen impecable y profesional
+- Comodidad para largas jornadas
+- Resistencia a manchas y lavados frecuentes
+- Productos clave: camisas, pantalones, faldas uniformes
+- Colores que representen la marca
+- Volúmenes típicos: 50-300 unidades por pedido
+""",
+            "retail": """
+RETAIL:
+- Imagen de marca es crucial
+- Comodidad para estar de pie muchas horas
+- Necesitan proyectar confianza al cliente
+- Productos clave: camisetas polo, camisas, pantalones
+- Personalización con branding
+- Volúmenes típicos: 25-120 unidades por pedido
+""",
+            "industria": """
+INDUSTRIA:
+- Seguridad y durabilidad son prioridad
+- Resistencia a condiciones adversas
+- Comodidad para trabajo físico
+- Productos clave: pantalones resistentes, sudaderas, camisetas
+- Colores oscuros preferidos
+- Volúmenes típicos: 100-500 unidades por pedido
+"""
+        }
+        
+        return sector_info.get(sector, "GENERAL: Enfoque en calidad, durabilidad y valor por dinero.")
+    
+    def _generate_fallback_advice(self, advice_type: Dict, products_by_type: Dict, message: str) -> str:
+        """Genera recomendación básica si falla Gemini"""
+        
+        sector = advice_type.get("sector_context", "unclear")
+        advice_type_str = advice_type.get("advice_type", "general_business")
+        
+        response = "💡 **ASESORAMIENTO COMERCIAL**\n\n"
+        
+        if sector == "construcción":
+            response += "Para tu empresa de **construcción**, recomiendo priorizan **durabilidad y comodidad**:\n\n"
+            
+            if "sudadera" in products_by_type:
+                sudaderas = products_by_type["sudadera"][:2]
+                response += "🔸 **SUDADERAS** - Ideales para trabajo exterior:\n"
+                for s in sudaderas:
+                    response += f"   • {s['name']} - ${s['precio_100_u']:,.0f} c/u (100+ un.)\n"
+                response += "\n"
+            
+            if "pantalón" in products_by_type:
+                pantalones = products_by_type["pantalón"][:2]
+                response += "🔸 **PANTALONES** - Resistentes al desgaste:\n"
+                for p in pantalones:
+                    response += f"   • {p['name']} - ${p['precio_100_u']:,.0f} c/u (100+ un.)\n"
+                response += "\n"
+                
+        elif sector == "oficina":
+            response += "Para ambiente **corporativo/oficina**, recomiendo productos que proyecten **profesionalismo**:\n\n"
+            
+            if "camisa" in products_by_type:
+                camisas = products_by_type["camisa"][:2]
+                response += "🔸 **CAMISAS** - Imagen profesional:\n"
+                for c in camisas:
+                    response += f"   • {c['name']} - ${c['precio_50_u']:,.0f} c/u (50+ un.)\n"
+                response += "\n"
+                
+        else:
+            # Recomendación general
+            response += "Basado en tu consulta, estas son mis **recomendaciones principales**:\n\n"
+            
+            # Mostrar productos más populares
+            for tipo, products in list(products_by_type.items())[:2]:
+                response += f"🔸 **{tipo.upper()}S** disponibles:\n"
+                for product in products[:2]:
+                    response += f"   • {product['name']} - ${product['precio_50_u']:,.0f} c/u (50+ un.)\n"
+                response += "\n"
+        
+        response += "💰 **Ventajas de comprar por volumen:**\n"
+        response += "• 50+ unidades: Precio base\n"
+        response += "• 100+ unidades: Hasta 15% descuento\n"
+        response += "• 200+ unidades: Hasta 25% descuento\n\n"
+        
+        response += "¿Te sirve esta información? ¿Hay algún producto específico que te interese más?"
+        
+        return response
 
 # Instancia global
 sales_agent = SalesAgent()

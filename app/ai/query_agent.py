@@ -672,6 +672,9 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                     "name": product.name,
                     "stock": product.stock,
                     "precio_50_u": product.precio_50_u,
+                    "tipo_prenda": product.tipo_prenda,  
+                    "color": product.color,              
+                    "talla": product.talla,
                     "descripcion": product.descripcion or 'Material de calidad premium',
                     "categoria": product.categoria or 'General'
                 })

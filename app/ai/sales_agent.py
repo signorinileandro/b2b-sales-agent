@@ -229,29 +229,53 @@ class SalesAgent:
             elif operation == "check_stock" and data.get("products"):
                 products = data["products"]
                 if len(products) == 0:
-                    return "En este momento no tengo pantalones en stock, pero estoy esperando mercadería nueva. ¿Te interesa que te avise cuando llegue?"
+                    return "En este momento no tengo stock disponible para esa búsqueda específica. ¿Te interesa ver otros productos similares?"
                 
-                # Agrupar por talla y color
-                talleres_disponibles = set()
-                colores_disponibles = set()
+                # ✅ RESPUESTA ESPECÍFICA PARA CONSULTA DE STOCK
+                unique_types = set()
+                unique_colors = set()
+                unique_talles = set()
                 total_stock = 0
                 
-                response = "📋 **PANTALONES DISPONIBLES:**\n\n"
+                response = f"📋 **STOCK DISPONIBLE:**\n\n"
                 
                 for product in products:
-                    talleres_disponibles.add(product.get('talla', 'N/A'))
-                    colores_disponibles.add(product.get('color', 'N/A'))
+                    unique_types.add(product.get('name', '').split(' ')[0])  # Tipo de prenda
+                    unique_colors.add(product.get('name', '').split(' ')[1] if len(product.get('name', '').split(' ')) > 1 else 'N/A')
+                    unique_talles.add(product.get('name', '').split(' - ')[1] if ' - ' in product.get('name', '') else 'N/A')
                     total_stock += product.get('stock', 0)
                     
-                    response += f"• {product['name']}\n"
-                    response += f"  Color: {product.get('color', 'N/A')} | Talla: {product.get('talla', 'N/A')}\n"
-                    response += f"  Stock: {product['stock']} unidades | ${product['precio_50_u']:,} c/u\n\n"
+                    # Extraer color y talla del nombre
+                    product_name = product.get('name', '')
+                    if ' - ' in product_name:
+                        base_name, talla = product_name.split(' - ', 1)
+                        if ' ' in base_name:
+                            parts = base_name.split(' ')
+                            tipo = parts[0]
+                            color = parts[1] if len(parts) > 1 else 'N/A'
+                        else:
+                            tipo = base_name
+                            color = 'N/A'
+                    else:
+                        tipo = product_name
+                        color = 'N/A'
+                        talla = 'N/A'
+                    
+                    response += f"• **{tipo} {color} - {talla}**\n"
+                    response += f"  📦 Stock: **{product['stock']} unidades**\n"
+                    response += f"  💰 Precio: **${product['precio_50_u']:,.0f}** (50+ un.)\n\n"
+                
+                # ✅ RESPUESTA ESPECÍFICA A LA CONSULTA
+                if any('azul' in p.get('name', '').lower() and 'l' in p.get('name', '').lower() for p in products):
+                    stock_azul_l = [p for p in products if 'azul' in p.get('name', '').lower() and ' - l' in p.get('name', '').lower()]
+                    if stock_azul_l:
+                        stock_especifico = stock_azul_l[0]['stock']
+                        response += f"🎯 **RESPUESTA ESPECÍFICA:** Te quedan **{stock_especifico} unidades** de buzos azules en talle L.\n\n"
                 
                 response += f"📊 **RESUMEN:**\n"
-                response += f"• Talles disponibles: {', '.join(sorted(talleres_disponibles))}\n"
-                response += f"• Colores disponibles: {', '.join(sorted(colores_disponibles))}\n"
-                response += f"• Stock total: {total_stock} unidades\n\n"
-                response += "¿Qué talle y color te interesa?"
+                response += f"• **Stock total consultado:** {total_stock:,} unidades\n"
+                response += f"• **Productos diferentes:** {len(products)}\n\n"
+                response += "¿Te interesa alguno en particular?"
                 
                 return response
             

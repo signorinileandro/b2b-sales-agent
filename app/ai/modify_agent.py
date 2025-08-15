@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 import time
 from fastapi import HTTPException
-from ..utils import log
+from ..utils.logger import log
 
 # Cargar variables de entorno
 load_dotenv()

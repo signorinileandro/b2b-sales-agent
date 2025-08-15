@@ -8,7 +8,7 @@ import json
 import os
 from dotenv import load_dotenv
 import time
-from ..utils import log
+from ..utils.logger import log
 
 # Cargar variables de entorno
 load_dotenv()

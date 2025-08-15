@@ -12,7 +12,8 @@ from .stock_agent import stock_agent
 from .order_agent import order_agent
 from .modify_agent import modify_agent
 from .sales_agent import sales_agent
-from ..utils import log
+from ..utils.logger import log
+
 
 # Cargar variables de entorno
 load_dotenv()

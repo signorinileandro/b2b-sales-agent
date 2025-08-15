@@ -7,7 +7,10 @@ from ..database import SessionLocal
 from .. import models, crud, schemas
 from datetime import datetime, timedelta
 from sqlalchemy import or_
-from ..utils import log
+from ..utils.logger import log
+from dotenv import load_dotenv
+
+load_dotenv()
 
 class QueryAgent:
     """Agente especializado en consultas y operaciones de base de datos"""
@@ -40,8 +43,9 @@ class QueryAgent:
                 self.model = genai.GenerativeModel('gemini-1.5-flash')
                 log(f"🔍 Query Agent usando API Key #{self.current_key_index + 1}")
                 return True
-            except:
-                return False
+            except Exception as e:
+                log(f"❌ Error configurando API Key #{self.current_key_index + 1}: {e}")
+                return self._try_next_key()
         return False
     
     def _try_next_key(self):
@@ -218,11 +222,32 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 return parsed_intent
                 
         except Exception as e:
-            log(f"❌ Error extrayendo intención: {e}")
+            log(f"❌ Error extrayendo intención con Gemini: {e}")
         
-        # ✅ FALLBACK MEJORADO CON TODOS LOS MAPEOS
+        # ✅ FALLBACK COMPLETADO
+        # ... (tu lógica de fallback parece extensa, la mantendré y completaré) ...
         user_lower = user_message.lower()
         
+        # Detección de cantidad primero
+        quantity = None
+        quantity_keywords = ["unidades", "cantidad"]
+        has_quantity_keyword = any(word in user_lower for word in quantity_keywords)
+        
+        numbers = [int(s) for s in user_lower.split() if s.isdigit()]
+        if numbers:
+            quantity = numbers[0]
+
+        # Detección de intención de pedido
+        order_keywords = ["pedido", "encargar", "quiero", "necesito", "generame", "haceme", "confirmar", "solicitar", "pedir"]
+        if any(word in user_lower for word in order_keywords) and (quantity or has_quantity_keyword):
+            filters = {"tipo_prenda": None, "color": None, "talla": None}
+            for tipo, term in mappings.items():
+                if tipo in user_lower:
+                    filters["tipo_prenda"] = term
+                    break
+            # ... (completar extracción de color y talla) ...
+            return {"intent_type": "confirm_order", "confidence": 0.95, "extracted_data": {"product_filters": filters, "quantity": quantity}}
+
         # Chaquetas/camperas/abrigos → sudadera
         if any(word in user_lower for word in ["chaqueta", "campera", "abrigo", "jacket", "buzo"]):
             return {

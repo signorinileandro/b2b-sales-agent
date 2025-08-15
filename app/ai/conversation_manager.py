@@ -13,7 +13,9 @@ from .order_agent import order_agent
 from .modify_agent import modify_agent
 from .sales_agent import sales_agent
 from ..utils.logger import log
+from ..utils.ollama_client import ollama_chat
 from .base_agent import BaseAgent
+from .general_chat_agent import general_chat_agent
 
 
 # Cargar variables de entorno
@@ -23,13 +25,6 @@ class ConversationManager(BaseAgent):
     def __init__(self):
         super().__init__(agent_name="ConversationManager")
         self.memory_cache = {}  # Cache en memoria por número de teléfono
-        
-        
-        if not self.api_keys:
-            raise ValueError("No se encontraron GOOGLE_API_KEY en variables de entorno")
-        
-        # Configurar Gemini con la primera key válida
-        self._configure_gemini()
 
         log(f"🔑 ConversationManager inicializado con {len(self.api_keys)} API keys")
 
@@ -82,22 +77,20 @@ class ConversationManager(BaseAgent):
         try:
             # Buscar conversación existente
             conversation_record = db.query(models.Conversation).filter(
-                models.Conversation.user_phone == phone
+                models.Conversation.user_phone == phone  # ✅ USAR user_phone, no user_name
             ).order_by(models.Conversation.created_at.desc()).first()
             
             # Buscar mensajes recientes (últimos 50)
-            
             recent_messages = db.query(models.ConversationMessage).filter(
                 models.ConversationMessage.user_phone == phone
-            ).order_by(models.ConversationMessage.timestamp.desc()).limit(50).all()
+            ).order_by(models.ConversationMessage.timestamp.desc()).limit(50).all()  # ✅ USAR timestamp
             
             # Buscar productos vistos recientemente (última hora)
             one_hour_ago = datetime.now() - timedelta(hours=1)
-            
             recent_searches = db.query(models.ConversationMessage).filter(
                 models.ConversationMessage.user_phone == phone,
-                models.ConversationMessage.timestamp >= one_hour_ago,
-                models.ConversationMessage.role == 'assistant'
+                models.ConversationMessage.timestamp >= one_hour_ago,  # ✅ USAR timestamp
+                models.ConversationMessage.role == 'assistant'  # ✅ USAR role
             ).limit(5).all()
             
             # Buscar pedidos recientes (últimos 7 días)  
@@ -115,15 +108,15 @@ class ConversationManager(BaseAgent):
                     {
                         'role': msg.role,
                         'content': msg.content,
-                        'timestamp': msg.timestamp.isoformat(),
-                        'intent': getattr(msg, 'intent', None)
+                        'timestamp': msg.timestamp.isoformat(),  # ✅ USAR timestamp
+                        'intent': getattr(msg, 'intent', None)  # ✅ USAR intent
                     } 
                     for msg in reversed(recent_messages)  # Orden cronológico
                 ],
                 'recent_searches': [
                     {
                         'content': msg.content,
-                        'timestamp': msg.timestamp.isoformat()
+                        'timestamp': msg.timestamp.isoformat()  # ✅ USAR timestamp
                     }
                     for msg in recent_searches
                 ],
@@ -168,18 +161,13 @@ class ConversationManager(BaseAgent):
             # Crear prompt con contexto completo
             prompt = self.create_intent_analysis_prompt_with_reasoning(message, conversation)  # ✅ NUEVO método
             
-            # ✅ USAR SISTEMA DE FALLBACK DE API KEYS
-            response = await self._make_gemini_request_with_fallback(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=150,  # ✅ AUMENTAR para incluir reasoning
-                )
-            )
+            response_text = self.call_ollama([
+                {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventas B2B textil."},
+                {"role": "user", "content": prompt}])
             
             # ✅ PARSEAR JSON RESPONSE
-            response_text = response.text.strip()
-            
+            response_text = self._extract_json_from_response(response_text)
+
             try:
                 # Limpiar respuesta JSON si viene con markdown
                 if response_text.startswith("```json"):
@@ -188,7 +176,7 @@ class ConversationManager(BaseAgent):
                     response_text = response_text[3:-3]
                 
                 parsed_response = json.loads(response_text)
-                
+                log(f"📦 Respuesta de Ollama: {parsed_response}")
                 intent = parsed_response.get("intent", "general_chat")
                 reasoning = parsed_response.get("reasoning", "No reasoning provided")
                 confidence = parsed_response.get("confidence", 0.8)
@@ -360,46 +348,37 @@ Ejemplo de respuesta:
             log(f"🔀 Derivando a agente: {intent}")
             
             if intent == 'check_stock':
-                # ✅ USAR STOCK AGENT REAL
                 return await stock_agent.handle_stock_query(message, conversation)
                 
             elif intent == 'create_order':
-                # ✅ USAR ORDER AGENT REAL
                 return await order_agent.handle_order_creation(message, conversation)
                 
             elif intent == 'modify_order':
-                # ✅ USAR MODIFY AGENT REAL
                 return await modify_agent.handle_order_modification(message, conversation)
                 
             elif intent == 'sales_advice':
-                # ✅ USAR SALES AGENT REAL
                 return await sales_agent.handle_sales_advice(message, conversation)
                 
             else:  # general_chat
-                return await self.handle_general_chat_temp(message, conversation)
+                return await general_chat_agent.handle_general_chat(message, conversation)
                 
         except Exception as e:
             log(f"❌ Error en dispatch: {e}")
             return "Disculpa, tuve un problema procesando tu consulta. ¿Podrías intentar de nuevo?"
-    
-    async def handle_general_chat_temp(self, message: str, conversation: Dict) -> str:
-        """Manejo temporal de charla general"""
-        # ✅ ELIMINAR LA INFO DE LA API KEY
-        return f"¡Hola! Soy Ventix, tu asistente de ventas textiles. ¿En qué puedo ayudarte hoy?\n\n🎯 Puedo mostrarte nuestro catálogo, consultar stock o ayudarte a hacer un pedido."
-    
-    async def update_conversation(self, phone: str, user_message: str, bot_response: str, intent: str, reasoning: str = None):  # ✅ NUEVO parámetro
+
+    async def update_conversation(self, phone: str, user_message: str, bot_response: str, intent: str, reasoning: str = None):
         """Actualiza la conversación en BD y memoria"""
         
         db = SessionLocal()
         try:
             # Buscar o crear conversación
             conversation_record = db.query(models.Conversation).filter(
-                models.Conversation.user_phone == phone
+                models.Conversation.user_phone == phone  # ✅ USAR user_phone
             ).first()
             
             if not conversation_record:
                 conversation_record = models.Conversation(
-                    user_phone=phone,
+                    user_phone=phone,  # ✅ USAR user_phone
                     created_at=datetime.now()
                 )
                 db.add(conversation_record)
@@ -407,26 +386,24 @@ Ejemplo de respuesta:
                 db.refresh(conversation_record)
             
             # Guardar mensaje del usuario CON REASONING
-            
             user_msg = models.ConversationMessage(
                 conversation_id=conversation_record.id,
-                user_phone=phone,
-                role='user',
+                user_phone=phone,  # ✅ MANTENER user_phone
+                role='user',  # ✅ USAR role
                 content=user_message,
-                intent=intent,
-                reasoning=reasoning,
-                timestamp=datetime.now()
+                intent=intent,  # ✅ USAR intent
+                reasoning=reasoning,  # ✅ USAR reasoning
+                timestamp=datetime.now()  # ✅ USAR timestamp
             )
             db.add(user_msg)
             
             # Guardar respuesta del bot
-            
             bot_msg = models.ConversationMessage(
                 conversation_id=conversation_record.id,
-                user_phone=phone,
-                role='assistant',
+                user_phone=phone,  # ✅ MANTENER user_phone
+                role='assistant',  # ✅ USAR role
                 content=bot_response,
-                timestamp=datetime.now()
+                timestamp=datetime.now()  # ✅ USAR timestamp
             )
             db.add(bot_msg)
             

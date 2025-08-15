@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import pytz
 from fastapi import HTTPException
 from . import models, schemas
 #from .utils.notifications import notify_new_order_sync
@@ -44,48 +45,68 @@ def get_orders(db: Session):
     return db.query(models.Order).all()
 
 
-def update_order(db: Session, order_id: int, new_qty: int):
-    """Actualizar pedido manejando stock correctamente"""
+def update_order(db: Session, order_id: int, order_update: schemas.OrderUpdate):
+    """Actualiza un pedido existente"""
     
+    # ✅ OBTENER PEDIDO
     db_order = db.query(models.Order).filter(models.Order.id == order_id).first()
     if not db_order:
-        raise HTTPException(status_code=404, detail="Order not found")
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
     
-    # Verificar ventana de tiempo
-    if datetime.utcnow() - db_order.created_at > timedelta(minutes=5):
-        raise HTTPException(status_code=403, detail="Edit window expired")
+    # ✅ VERIFICAR TIEMPO LÍMITE PARA MODIFICAR (5 minutos) - ARREGLAR TIMEZONE
+    utc = pytz.UTC
     
-    # Obtener producto
-    product = db.query(models.Product).filter(models.Product.id == db_order.product_id).first()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
+    # Manejar timezone del created_at
+    if db_order.created_at.tzinfo is None:
+        # Si created_at no tiene timezone, asumimos UTC
+        order_time = utc.localize(db_order.created_at)
+    else:
+        order_time = db_order.created_at
     
-    old_qty = db_order.qty
+    now = datetime.now(utc)
+    time_passed = now - order_time  # ✅ AHORA AMBAS SON TIMEZONE-AWARE
     
-    # ✅ RESTAURAR stock anterior
-    product.stock += old_qty
-    
-    # ✅ VERIFICAR stock para nueva cantidad
-    if product.stock < new_qty:
-        # Volver al estado anterior
-        product.stock -= old_qty
+    if time_passed.total_seconds() > 300:  # 5 minutos
         raise HTTPException(
             status_code=400, 
-            detail=f"Stock insuficiente. Disponible: {product.stock}, Solicitado: {new_qty}"
+            detail=f"No se puede modificar. Han pasado {int(time_passed.total_seconds() / 60)} minutos desde la creación"
         )
     
-    # ✅ DESCONTAR nuevo stock
-    product.stock -= new_qty
+    # ✅ MANEJAR STOCK SEGÚN EL CAMBIO DE CANTIDAD
+    if hasattr(order_update, 'qty') and order_update.qty is not None:
+        old_qty = db_order.qty
+        new_qty = order_update.qty
+        qty_difference = new_qty - old_qty
+        
+        # Obtener producto para gestionar stock
+        product = db.query(models.Product).filter(models.Product.id == db_order.product_id).first()
+        if not product:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+        
+        # Si aumenta cantidad, verificar stock
+        if qty_difference > 0:
+            if product.stock < qty_difference:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"Stock insuficiente. Disponible: {product.stock}, necesario: {qty_difference}"
+                )
+            # Reducir stock disponible
+            product.stock -= qty_difference
+            
+        # Si reduce cantidad, restaurar stock
+        elif qty_difference < 0:
+            product.stock += abs(qty_difference)
     
-    # ✅ ACTUALIZAR pedido
-    db_order.qty = new_qty
+    # ✅ ACTUALIZAR CAMPOS DEL PEDIDO
+    update_data = order_update.dict(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(db_order, field, value)
+    
+    # ✅ ACTUALIZAR TIMESTAMP
+    db_order.updated_at = datetime.now(utc)
     
     db.commit()
     db.refresh(db_order)
-    db.refresh(product)
-    
-    print(f"✏️ Pedido {order_id}: {old_qty} → {new_qty} unidades")
-    print(f"📦 Stock actualizado: {product.stock} unidades")
     
     return db_order
 

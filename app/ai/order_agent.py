@@ -1,4 +1,3 @@
-import google.generativeai as genai
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -20,15 +19,7 @@ class OrderAgent(BaseAgent):
     
     def __init__(self):
         super().__init__(agent_name="OrderAgent")
-
-        
-        if not self.api_keys:
-            raise ValueError("No se encontraron GOOGLE_API_KEY en variables de entorno")
-        
-        # Configurar Gemini con la primera key válida
-        self._configure_gemini()
-        
-        print(f"🛒 OrderAgent inicializado con {len(self.api_keys)} API keys")
+        print(f"🛒 OrderAgent inicializado")
 
     async def handle_order_creation(self, message: str, conversation: Dict) -> str:
         """Maneja la creación de pedidos con análisis inteligente del mensaje"""
@@ -45,8 +36,8 @@ class OrderAgent(BaseAgent):
             if not validation['is_valid']:
                 return validation['response']
             
-            # 3. Crear el pedido en la base de datos
-            order_result = await self._create_order_in_db(order_analysis, conversation['phone'])
+            # ✅ 3. Crear el pedido en la base de datos (PASAR VALIDATION, NO ANALYSIS)
+            order_result = await self._create_order_in_db(validation, conversation['phone'])
             
             # 4. Generar respuesta natural
             response = await self._generate_order_response(order_result, order_analysis)
@@ -112,16 +103,13 @@ EJEMPLOS:
 - "quiero comprar para construcción, 80 unidades de lo azul en L" → {{"has_quantity": true, "product_filters": {{"color": "azul", "talla": "L"}}, "quantity": 80, "special_requirements": "para construcción"}}"""
 
         try:
-            response = await self._make_gemini_request_with_fallback(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=300,
-                )
-            )
+            response = self.call_ollama([
+                {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventasB2B textil."},
+                {"role": "user", "content": prompt}
+            ])
             
             # Limpiar y parsear respuesta
-            response_clean = response.text.strip()
+            response_clean = self._extract_json_from_response(response)
             if response_clean.startswith("```json"):
                 response_clean = response_clean[7:-3]
             elif response_clean.startswith("```"):
@@ -330,11 +318,10 @@ EJEMPLOS:
             }
         }
     
-    async def _create_order_in_db(self, analysis: Dict, user_phone: str) -> Dict:
+    async def _create_order_in_db(self, validation: Dict, user_phone: str) -> Dict:
         """Crea el pedido en la base de datos usando el CRUD existente"""
         
         try:
-            validation = analysis  # Ya viene validado
             product_info = validation["available_product"]
             quantity = validation["quantity"]
             
@@ -552,16 +539,13 @@ EJEMPLOS:
 - "cancelar pedido" → {{"modification_type": "cancel_order", "is_clear": true}}"""
 
         try:
-            response = await self._make_gemini_request_with_fallback(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=150,
-                )
-            )
+            response = self.call_ollama([
+                {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventasB2B textil."},
+                {"role": "user", "content": prompt}
+            ])
             
             # Limpiar y parsear respuesta
-            response_clean = response.text.strip()
+            response_clean = self._extract_json_from_response(response)
             if response_clean.startswith("```json"):
                 response_clean = response_clean[7:-3]
             elif response_clean.startswith("```"):

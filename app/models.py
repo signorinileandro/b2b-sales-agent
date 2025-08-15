@@ -43,6 +43,7 @@ class Conversation(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     user_name = Column(String, nullable=True)
+    user_phone = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     status = Column(String, default="active")  # active, completed, abandoned
@@ -57,13 +58,13 @@ class ConversationMessage(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     conversation_id = Column(Integer, ForeignKey("conversations.id"))
-    message_type = Column(String)  # "user" o "assistant"
+    user_phone = Column(String, nullable=True) 
+    role = Column(String)
     content = Column(Text)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # Datos adicionales
-    products_shown = Column(Text, nullable=True)  # JSON con productos mostrados
-    intent_detected = Column(String, nullable=True)
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())     
+    intent = Column(String, nullable=True)
+    reasoning = Column(Text, nullable=True)
+    products_shown = Column(Text, nullable=True)
     
     # Relación
     conversation = relationship("Conversation", back_populates="messages")

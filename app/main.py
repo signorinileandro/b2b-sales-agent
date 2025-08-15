@@ -9,6 +9,7 @@ from .database import Base, engine, SessionLocal
 from . import crud, schemas, models
 from .ai.conversation_manager import conversation_manager
 from .utils.logger import log  # ✅ IMPORTAR
+from .utils.whatsapp_client import whatsapp_client  # ✅ IMPORTAR CLIENTE WHATSAPP
 import httpx
 from typing import Set
 
@@ -143,7 +144,7 @@ async def webhook_whatsapp(request: Request):
     """Webhook para recibir mensajes de WhatsApp"""
     try:
         data = await request.json()
-        log(f"📱 Webhook WhatsApp recibido: {data}")  # ✅ USAR LOG
+        log(f"📱 Webhook WhatsApp recibido: {data}")
         
         if data.get("object") == "whatsapp_business_account":
             for entry in data.get("entry", []):
@@ -158,7 +159,7 @@ async def webhook_whatsapp(request: Request):
                             
                             # ✅ DEDUPLICACIÓN
                             if message_id in processed_messages:
-                                log(f"⏭️ Mensaje {message_id} ya procesado")  # ✅ USAR LOG
+                                log(f"⏭️ Mensaje {message_id} ya procesado")
                                 continue
                             
                             processed_messages.add(message_id)
@@ -169,21 +170,30 @@ async def webhook_whatsapp(request: Request):
                             
                             if message_type == "text" and from_number:
                                 text_body = message.get("text", {}).get("body", "")
-                                log(f"📨 Mensaje de {from_number}: {text_body}")  # ✅ USAR LOG
+                                log(f"📨 Mensaje de {from_number}: {text_body}")
                                 
                                 normalized_number = normalize_phone_number(from_number)
                                 
                                 try:
-                                    # ✅ USAR CONVERSATION_MANAGER
+                                    # ✅ MARCAR COMO LEÍDO PRIMERO (opcional)
+                                    await whatsapp_client.mark_as_read(message_id)
+                                    
+                                    # ✅ PROCESAR CON CONVERSATION_MANAGER
                                     ai_response = await conversation_manager.process_message(normalized_number, text_body)
-                                    await send_ai_response_via_n8n(normalized_number, ai_response)
+                                    
+                                    # ✅ ENVIAR DIRECTAMENTE POR WHATSAPP
+                                    await send_whatsapp_message(normalized_number, ai_response)
+                                    
                                 except Exception as e:
-                                    log(f"❌ Error procesando: {e}")  # ✅ USAR LOG
+                                    log(f"❌ Error procesando mensaje: {e}")
+                                    # ✅ ENVIAR MENSAJE DE ERROR AL USUARIO
+                                    error_msg = "Disculpa, tuve un problema técnico. ¿Podrías intentar de nuevo?"
+                                    await send_whatsapp_message(normalized_number, error_msg)
         
         return {"status": "ok"}
     except Exception as e:
-        log(f"❌ Error webhook: {e}")  # ✅ USAR LOG
-        return {"status": "error"}
+        log(f"❌ Error webhook: {e}")
+        return {"status": "error", "message": str(e)}
 
 @app.get("/webhook/whatsapp")
 async def verify_webhook(request: Request):
@@ -205,53 +215,31 @@ async def verify_webhook(request: Request):
         log("❌ Token de verificación incorrecto")  # ✅ USAR LOG
         raise HTTPException(status_code=403, detail="Forbidden")
 
-async def process_incoming_whatsapp_message(message: dict):
-    """Procesa mensaje entrante de WhatsApp"""
-    
-    user_phone = message["from"]
-    message_text = message.get("text", {}).get("body", "")
-    message_type = message["type"]
-    
-    log(f"📨 Mensaje de {user_phone}: {message_text}")  # ✅ USAR LOG
-    
-    if message_type == "text" and message_text:
-        # ✅ USAR CONVERSATION_MANAGER
-        ai_response = await conversation_manager.process_message(user_phone, message_text)
-        
-        # Enviar respuesta vía n8n
-        await send_ai_response_via_n8n(user_phone, ai_response)
-
-async def send_ai_response_via_n8n(phone: str, ai_message: str):
-    """Envía respuesta del AI vía n8n"""
-    
-    normalized_phone = normalize_phone_number(phone)
-    
-    webhook_data = {
-        "phone": normalized_phone,  # Usar número normalizado
-        "ai_message": ai_message,
-        "access_token": os.getenv("ACCESS_TOKEN")
-    }
-    
-    webhook_url = os.getenv("N8N_AI_RESPONSE_URL", "http://n8n:5678/webhook-test/whatsapp-ai-response")
-    
-    log(f"📞 Número original: {phone}")  # ✅ USAR LOG
-    log(f"📞 Número normalizado: {normalized_phone}")  # ✅ USAR LOG
-    log(f"🔍 Enviando respuesta IA a: {webhook_url}")  # ✅ USAR LOG
+async def send_whatsapp_message(phone: str, message: str):
+    """Envía mensaje directamente por WhatsApp Business API"""
     
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                webhook_url,
-                json=webhook_data,
-                timeout=10.0
-            )
-            log(f"✅ Respuesta AI enviada vía n8n: {response.status_code}")  # ✅ USAR LOG
+        result = await whatsapp_client.send_message(to=phone, message=message)
+        
+        if result.get("success"):
+            log(f"✅ Mensaje enviado a {phone}: {message[:50]}...")
+        else:
+            log(f"❌ Error enviando mensaje a {phone}: {result.get('error', 'Unknown error')}")
             
-            if response.status_code != 200:
-                log(f"❌ Error response: {response.status_code} - {response.text}")  # ✅ USAR LOG
+            # Si falla, intentar con formato de número diferente
+            if not result.get("success") and phone.startswith("541"):
+                # Intentar con formato internacional completo
+                international_phone = f"54{phone[3:]}"  # 541155744089 → 541155744089 (no change) o formato alternativo
+                log(f"🔄 Reintentando con formato: {international_phone}")
                 
+                retry_result = await whatsapp_client.send_message(to=international_phone, message=message)
+                if retry_result.get("success"):
+                    log(f"✅ Mensaje enviado en segundo intento a {international_phone}")
+                else:
+                    log(f"❌ Falló también el segundo intento: {retry_result.get('error')}")
+                    
     except Exception as e:
-        log(f"❌ Error enviando respuesta AI: {type(e).__name__}: {e}")  # ✅ USAR LOG
+        log(f"❌ Excepción enviando mensaje WhatsApp: {e}")
 
 def normalize_phone_number(phone: str) -> str:
     """Normaliza números de teléfono argentinos para WhatsApp"""

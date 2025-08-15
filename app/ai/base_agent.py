@@ -5,6 +5,7 @@ from typing import List
 from datetime import datetime
 import google.generativeai as genai
 from ..utils.logger import log
+from ..utils.ollama_client import ollama_chat
 
 class BaseAgent:
     """
@@ -69,7 +70,7 @@ class BaseAgent:
 
     async def _make_gemini_request_with_fallback(self, prompt: str, **kwargs):
         """
-        Hace petición a Gemini con fallback automático entre modelos y API keys.
+        Hace petición a Ollama con fallback automático entre modelos y API keys.
         """
         initial_key_index = self.current_key_index
         
@@ -111,3 +112,35 @@ class BaseAgent:
                 # Si después de cambiar, volvemos al punto de partida, significa que probamos todo.
                 if self.current_key_index == initial_key_index and self.current_model_index == 0:
                     raise Exception(f"{self.agent_name}: Todas las combinaciones de keys y modelos han fallado.")
+
+    def call_ollama(self, messages, model="qwen3:8b"):
+        return ollama_chat(messages, model=model)
+    
+    def _extract_json_from_response(self, response_text: str) -> str:
+        """Extrae JSON de la respuesta de Ollama que puede contener texto adicional"""
+        
+        # ✅ CASO 1: Respuesta directa es JSON
+        if response_text.strip().startswith('{') and response_text.strip().endswith('}'):
+            return response_text.strip()
+        
+        # ✅ CASO 2: JSON dentro de markdown
+        if "```json" in response_text:
+            start = response_text.find("```json") + 7
+            end = response_text.find("```", start)
+            if end != -1:
+                return response_text[start:end].strip()
+        
+        # ✅ CASO 3: JSON después de texto explicativo (como <think>)
+        # Buscar el primer { y el último }
+        first_brace = response_text.find('{')
+        last_brace = response_text.rfind('}')
+        
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            json_candidate = response_text[first_brace:last_brace + 1]
+            
+            # Verificar que sea JSON válido básico
+            if json_candidate.count('{') == json_candidate.count('}'):
+                return json_candidate
+        
+        # ✅ CASO 4: No se encontró JSON válido
+        return None

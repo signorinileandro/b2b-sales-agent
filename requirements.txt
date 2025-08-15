@@ -9,3 +9,5 @@ httpx
 google-generativeai
 fuzzywuzzy
 python-levenshtein
+ollama
+pytz

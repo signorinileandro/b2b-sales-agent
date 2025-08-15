@@ -132,16 +132,13 @@ EJEMPLOS:
 - "qué tela dura más?" → {{"advice_type": "material_advice"}}"""
 
         try:
-            response = await self._make_gemini_request_with_fallback(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.2,  # Algo más creativo para asesoramiento
-                    max_output_tokens=250,
-                )
-            )
+            response = self.call_ollama([
+                {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventas B2B textil."},
+                {"role": "user", "content": prompt}
+            ])
             
             # Limpiar y parsear respuesta
-            response_clean = response.text.strip()
+            response_clean = self._extract_json_from_response(response)
             if response_clean.startswith("```json"):
                 response_clean = response_clean[7:-3]
             elif response_clean.startswith("```"):
@@ -316,15 +313,12 @@ FORMATO DE RESPUESTA:
 TONO: Profesional, consultivo, orientado a soluciones empresariales"""
 
         try:
-            response = await self._make_gemini_request_with_fallback(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.3,  # Creativo pero coherente
-                    max_output_tokens=600,
-                )
-            )
-            
-            advice_response = response.text.strip()
+            response_text = self.call_ollama([
+                {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventas B2B textil."},
+                {"role": "user", "content": prompt}
+            ])
+
+            advice_response = self._extract_json_from_response(response_text)
             
             # Agregar emoji y estructura si es necesario
             if not advice_response.startswith("💡"):

@@ -174,7 +174,12 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
 """
 
         try:
-            response = await self._make_gemini_request(extraction_prompt)
+            response = self.call_ollama([
+                    {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventas B2B textil."},
+                    {"role": "user", "content": extraction_prompt}
+                ])
+            
+            response_clean = self._extract_json_from_response(response)
             if response:
                 # Limpiar respuesta y extraer JSON
                 response_clean = response.strip()

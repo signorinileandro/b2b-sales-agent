@@ -1,4 +1,3 @@
-import google.generativeai as genai
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
@@ -6,29 +5,17 @@ from ..database import SessionLocal
 from .. import models, crud, schemas
 import json
 import os
-from dotenv import load_dotenv
-import time
 from fastapi import HTTPException
 from ..utils.logger import log
 from .base_agent import BaseAgent
-
-# Cargar variables de entorno
-load_dotenv()
+import pytz
 
 class ModifyAgent(BaseAgent):
     """Agente especializado en modificación y gestión de pedidos existentes"""
     
     def __init__(self):
         super().__init__(agent_name="ModifyAgent")
-
-        
-        if not self.api_keys:
-            raise ValueError("No se encontraron GOOGLE_API_KEY en variables de entorno")
-        
-        # Configurar Gemini con la primera key válida
-        self._configure_gemini()
-        
-        log(f"✏️ ModifyAgent inicializado con {len(self.api_keys)} API keys")
+        log(f"✏️ ModifyAgent inicializado para Ollama")
 
     async def handle_order_modification(self, message: str, conversation: Dict) -> str:
         """Maneja modificaciones de pedidos con análisis inteligente"""
@@ -72,8 +59,9 @@ class ModifyAgent(BaseAgent):
         # Buscar pedidos recientes del usuario
         db = SessionLocal()
         try:
-            # Buscar pedidos de los últimos 30 días
-            recent_time = datetime.utcnow() - timedelta(days=30)
+            # ✅ ARREGLAR TIMEZONE - usar timezone-aware datetime
+            utc = pytz.UTC
+            recent_time = datetime.now(utc) - timedelta(days=30)
             
             user_orders = db.query(models.Order).filter(
                 models.Order.user_phone == conversation['phone'],
@@ -91,7 +79,15 @@ class ModifyAgent(BaseAgent):
             for order in user_orders:
                 product = db.query(models.Product).filter(models.Product.id == order.product_id).first()
                 
-                time_passed = datetime.utcnow() - order.created_at
+                # ✅ ARREGLAR CÁLCULO DE TIEMPO - manejar timezone correctly
+                if order.created_at.tzinfo is None:
+                    # Si created_at no tiene timezone, asumimos UTC
+                    order_time = utc.localize(order.created_at)
+                else:
+                    order_time = order.created_at
+                
+                now = datetime.now(utc)
+                time_passed = now - order_time
                 minutes_passed = time_passed.total_seconds() / 60
                 can_modify = minutes_passed <= 5 and order.status == "pending"
                 
@@ -107,7 +103,7 @@ class ModifyAgent(BaseAgent):
                     "buyer": order.buyer
                 })
             
-            # Usar Gemini para identificar qué pedido quiere modificar
+            # ✅ USAR OLLAMA EN LUGAR DE GEMINI
             prompt = f"""Identifica qué pedido quiere modificar el usuario:
 
 MENSAJE DEL USUARIO: "{message}"
@@ -131,74 +127,67 @@ Responde SOLO con JSON válido:
 }}"""
 
             try:
-                response = await self._make_gemini_request_with_fallback(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.1,
-                        max_output_tokens=200,
-                    )
-                )
-                
-                # Limpiar y parsear respuesta
-                response_clean = response.text.strip()
-                if response_clean.startswith("```json"):
-                    response_clean = response_clean[7:-3]
-                elif response_clean.startswith("```"):
-                    response_clean = response_clean[3:-3]
-                
-                analysis = json.loads(response_clean)
-                log(f"✏️🎯 Identificación de pedido: {analysis}")
-                
-                # Procesar resultado
-                if analysis.get("target_found") and analysis.get("target_order_id"):
-                    target_order_id = analysis["target_order_id"]
-                    target_order = next((o for o in orders_info if o["id"] == target_order_id), None)
+                response = self.call_ollama([
+                    {"role": "system", "content": "Eres un asistente para modificación de pedidos textiles B2B."},
+                    {"role": "user", "content": prompt}
+                ])
+                                
+                # ✅ MEJORAR PARSING JSON
+                json_content = self._extract_json_from_response(response)
+                if json_content:
+                    analysis = json.loads(json_content)
+                    log(f"✏️🎯 Identificación de pedido: {analysis}")
                     
-                    if target_order:
-                        if not target_order["can_modify"]:
+                    # Procesar resultado
+                    if analysis.get("target_found") and analysis.get("target_order_id"):
+                        target_order_id = analysis["target_order_id"]
+                        target_order = next((o for o in orders_info if o["id"] == target_order_id), None)
+                        
+                        if target_order:
+                            if not target_order["can_modify"]:
+                                return {
+                                    "found": False,
+                                    "response": f"❌ **El pedido #{target_order_id} no se puede modificar**\n\n" \
+                                              f"📅 Fue creado hace {target_order['minutes_ago']} minutos\n" \
+                                              f"⏰ Solo se puede modificar durante los primeros 5 minutos\n\n" \
+                                              f"¿Querés hacer un nuevo pedido en su lugar?"
+                                }
+                            
+                            return {
+                                "found": True,
+                                "order": target_order,
+                                "response": f"Pedido #{target_order_id} identificado para modificar"
+                            }
+                    
+                    elif analysis.get("requires_clarification"):
+                        # Mostrar pedidos disponibles para modificar
+                        modifiable_orders = [o for o in orders_info if o["can_modify"]]
+                        
+                        if not modifiable_orders:
                             return {
                                 "found": False,
-                                "response": f"❌ **El pedido #{target_order_id} no se puede modificar**\n\n" \
-                                          f"📅 Fue creado hace {target_order['minutes_ago']} minutos\n" \
-                                          f"⏰ Solo se puede modificar durante los primeros 5 minutos\n\n" \
-                                          f"¿Querés hacer un nuevo pedido en su lugar?"
+                                "response": "❌ **No tenés pedidos que se puedan modificar actualmente**\n\n" \
+                                          "Solo se pueden modificar pedidos dentro de los primeros 5 minutos.\n\n" \
+                                          "¿Querés hacer un nuevo pedido?"
                             }
                         
-                        return {
-                            "found": True,
-                            "order": target_order,
-                            "response": f"Pedido #{target_order_id} identificado para modificar"
-                        }
-                
-                elif analysis.get("requires_clarification"):
-                    # Mostrar pedidos disponibles para modificar
-                    modifiable_orders = [o for o in orders_info if o["can_modify"]]
-                    
-                    if not modifiable_orders:
+                        response_text = "¿Cuál de estos pedidos querés modificar?\n\n"
+                        
+                        for order in modifiable_orders:
+                            response_text += f"**#{order['id']}** - {order['product_name']}\n"
+                            response_text += f"    📦 Cantidad: {order['quantity']} unidades\n"
+                            response_text += f"    ⏰ Creado hace {order['minutes_ago']} minutos\n\n"
+                        
+                        response_text += "Decí el número de pedido que querés cambiar."
+                        
                         return {
                             "found": False,
-                            "response": "❌ **No tenés pedidos que se puedan modificar actualmente**\n\n" \
-                                      "Solo se pueden modificar pedidos dentro de los primeros 5 minutos.\n\n" \
-                                      "¿Querés hacer un nuevo pedido?"
+                            "response": response_text,
+                            "available_orders": modifiable_orders
                         }
-                    
-                    response_text = "¿Cuál de estos pedidos querés modificar?\n\n"
-                    
-                    for order in modifiable_orders:
-                        response_text += f"**#{order['id']}** - {order['product_name']}\n"
-                        response_text += f"    📦 Cantidad: {order['quantity']} unidades\n"
-                        response_text += f"    ⏰ Creado hace {order['minutes_ago']} minutos\n\n"
-                    
-                    response_text += "Decí el número de pedido que querés cambiar."
-                    
-                    return {
-                        "found": False,
-                        "response": response_text,
-                        "available_orders": modifiable_orders
-                    }
                 
             except Exception as e:
-                log(f"✏️❌ Error en análisis Gemini: {e}")
+                log(f"✏️❌ Error en análisis Ollama: {e}")
                 # Fallback: usar el pedido más reciente modificable
                 modifiable_orders = [o for o in orders_info if o["can_modify"]]
                 
@@ -223,6 +212,33 @@ Responde SOLO con JSON válido:
             }
         finally:
             db.close()
+
+    def _extract_json_from_response(self, response_text: str) -> str:
+        """Extrae JSON de la respuesta de Ollama"""
+        
+        # CASO 1: Respuesta directa es JSON
+        if response_text.strip().startswith('{') and response_text.strip().endswith('}'):
+            return response_text.strip()
+        
+        # CASO 2: JSON dentro de markdown
+        if "```json" in response_text:
+            start = response_text.find("```json") + 7
+            end = response_text.find("```", start)
+            if end != -1:
+                return response_text[start:end].strip()
+        
+        # CASO 3: JSON después de texto explicativo
+        first_brace = response_text.find('{')
+        last_brace = response_text.rfind('}')
+        
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            json_candidate = response_text[first_brace:last_brace + 1]
+            
+            # Verificar que sea JSON válido básico
+            if json_candidate.count('{') == json_candidate.count('}'):
+                return json_candidate
+        
+        return None
     
     async def _analyze_modification_type(self, message: str, order_identification: Dict) -> Dict:
         """Analiza qué tipo de modificación quiere hacer"""
@@ -257,16 +273,13 @@ EJEMPLOS:
 - "cambiar cantidad" → {{"modification_type": "unclear", "confirmation_needed": true}}"""
 
         try:
-            response = await self._make_gemini_request_with_fallback(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=200,
-                )
-            )
+            response = self.call_ollama([
+                {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventasB2B textil."},
+                {"role": "user", "content": prompt}
+            ])
             
             # Limpiar y parsear respuesta
-            response_clean = response.text.strip()
+            response_clean = self._extract_json_from_response(response)
             if response_clean.startswith("```json"):
                 response_clean = response_clean[7:-3]
             elif response_clean.startswith("```"):
@@ -455,37 +468,44 @@ EJEMPLOS:
             db.close()
     
     async def _execute_modification_with_stock_management(self, modification_data: Dict, order_info: Dict) -> Dict:
-        """Ejecuta la modificación manejando el stock correctamente"""
+        """Ejecuta la modificación usando el CRUD arreglado"""
         
         try:
             if modification_data["type"] == "cancel":
-                # ✅ CANCELAR PEDIDO Y RESTAURAR STOCK
+                # ✅ USAR CRUD PARA CANCELAR
+                order_update = schemas.OrderUpdate(status="cancelled")
+                
                 db = SessionLocal()
                 try:
-                    # Usar CRUD para cancelar y restaurar stock
-                    result = crud.restore_stock_on_order_cancellation(db, modification_data["order_id"])
+                    # Restaurar stock manualmente antes de cancelar
+                    order = db.query(models.Order).filter(models.Order.id == modification_data["order_id"]).first()
+                    product = db.query(models.Product).filter(models.Product.id == order.product_id).first()
                     
-                    return {
-                        "success": True,
-                        "action": "cancelled",
-                        "order_id": modification_data["order_id"],
-                        "restored_quantity": order_info["quantity"],
-                        "product_name": order_info["product_name"]
-                    }
-                    
+                    if order and product:
+                        product.stock += order.qty
+                        order.status = "cancelled"
+                        db.commit()
+                        
+                        log(f"✏️✅ Pedido #{modification_data['order_id']} cancelado")
+                        return {
+                            "success": True,
+                            "action": "cancelled",
+                            "order_id": modification_data["order_id"],
+                            "restored_quantity": order.qty,
+                            "product_name": order_info["product_name"]
+                        }
                 finally:
                     db.close()
                     
             elif modification_data["type"] == "quantity_change":
-                # ✅ CAMBIAR CANTIDAD CON GESTIÓN DE STOCK
+                # ✅ USAR CRUD PARA CAMBIAR CANTIDAD
+                order_update = schemas.OrderUpdate(qty=modification_data["new_quantity"])
+                
                 db = SessionLocal()
                 try:
-                    # Usar CRUD para actualizar pedido (maneja stock automáticamente)
-                    updated_order = crud.update_order(
-                        db, 
-                        modification_data["order_id"], 
-                        modification_data["new_quantity"]
-                    )
+                    updated_order = crud.update_order(db, modification_data["order_id"], order_update)
+                    
+                    log(f"✏️✅ Pedido #{modification_data['order_id']} actualizado con CRUD")
                     
                     return {
                         "success": True,
@@ -500,6 +520,13 @@ EJEMPLOS:
                         "stock_after": modification_data["stock_after_change"]
                     }
                     
+                except HTTPException as http_e:
+                    log(f"✏️❌ Error CRUD: {http_e.detail}")
+                    return {
+                        "success": False,
+                        "error": http_e.detail,
+                        "error_type": "crud_error"
+                    }
                 finally:
                     db.close()
             
@@ -509,14 +536,6 @@ EJEMPLOS:
                     "error": f"Tipo de modificación no soportado: {modification_data['type']}"
                 }
                 
-        except HTTPException as http_e:
-            log(f"✏️❌ Error HTTP en modificación: {http_e.detail}")
-            return {
-                "success": False,
-                "error": http_e.detail,
-                "error_type": "stock_insufficient" if "stock" in str(http_e.detail).lower() else "http_error"
-            }
-            
         except Exception as e:
             log(f"✏️❌ Error ejecutando modificación: {e}")
             return {
@@ -524,62 +543,10 @@ EJEMPLOS:
                 "error": str(e),
                 "error_type": "general"
             }
-    
-    async def _generate_modification_response(self, execution_result: Dict, modification_analysis: Dict) -> str:
-        """Genera respuesta natural sobre el resultado de la modificación"""
-        
-        if execution_result.get("success"):
-            
-            if execution_result.get("action") == "cancelled":
-                return f"✅ **PEDIDO #{execution_result['order_id']} CANCELADO EXITOSAMENTE**\n\n" \
-                       f"🗑️ **{execution_result['product_name']}**\n" \
-                       f"♻️ Stock restaurado: **+{execution_result['restored_quantity']} unidades**\n\n" \
-                       f"¿Querés hacer un nuevo pedido o necesitás algo más?"
-            
-            elif execution_result.get("action") == "quantity_changed":
-                
-                change_type = "aumentada" if execution_result["quantity_difference"] > 0 else "reducida"
-                change_icon = "📈" if execution_result["quantity_difference"] > 0 else "📉"
-                
-                response = f"✅ **PEDIDO #{execution_result['order_id']} MODIFICADO** {change_icon}\n\n"
-                response += f"🏷️ **{execution_result['product_name']}**\n\n"
-                
-                response += f"📦 **Cantidad anterior:** {execution_result['old_quantity']:,} unidades\n"
-                response += f"📦 **Nueva cantidad:** {execution_result['new_quantity']:,} unidades\n"
-                response += f"📊 **Cantidad {change_type}:** {abs(execution_result['quantity_difference']):,} unidades\n\n"
-                
-                response += f"💰 **Precio unitario:** ${execution_result['precio_unitario']:,.0f}\n"
-                response += f"💸 **Nuevo total:** ${execution_result['new_total']:,.0f}\n\n"
-                
-                response += f"📋 **Stock restante:** {execution_result['stock_after']:,} unidades\n\n"
-                
-                response += f"🎉 **¡Modificación realizada exitosamente!**\n\n"
-                response += f"¿Necesitás algún otro cambio o algo más para tu empresa?"
-                
-                return response
-        
-        else:
-            error = execution_result.get("error", "Error desconocido")
-            error_type = execution_result.get("error_type", "general")
-            
-            if error_type == "stock_insufficient":
-                return f"❌ **No se pudo modificar el pedido**\n\n" \
-                       f"🚫 **Problema de stock:** {error}\n\n" \
-                       f"**Opciones disponibles:**\n" \
-                       f"• Reducir la cantidad solicitada\n" \
-                       f"• Cancelar este pedido y hacer uno nuevo\n" \
-                       f"• Consultar stock de productos similares\n\n" \
-                       f"¿Qué preferís hacer?"
-            
-            elif error_type == "http_error":
-                return f"❌ **Error del sistema**\n\n" \
-                       f"{error}\n\n" \
-                       f"Por favor, intentá de nuevo en unos segundos."
-            
-            else:
-                return f"❌ **Error modificando pedido**\n\n" \
-                       f"{error}\n\n" \
-                       f"¿Podrías intentar de nuevo especificando claramente qué querés cambiar?"
+
+    # ✅ ELIMINAR LOS MÉTODOS MANUALES (ya no los necesitamos)
+    # async def _cancel_order_manually(...)
+    # async def _update_quantity_manually(...)
 
 # Instancia global
 modify_agent = ModifyAgent()

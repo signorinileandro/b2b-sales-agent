@@ -24,10 +24,6 @@ class ConversationManager(BaseAgent):
         super().__init__(agent_name="ConversationManager")
         self.memory_cache = {}  # Cache en memoria por número de teléfono
         
-        # ✅ SISTEMA DE MÚLTIPLES API KEYS CON ROTACIÓN
-        self.api_keys = self._load_api_keys()
-        self.current_key_index = 0
-        self.key_retry_delays = {}  # Para tracking de delays por key
         
         if not self.api_keys:
             raise ValueError("No se encontraron GOOGLE_API_KEY en variables de entorno")

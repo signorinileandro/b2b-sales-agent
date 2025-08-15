@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import or_
 from ..utils.logger import log
 from dotenv import load_dotenv
-from base_agent import BaseAgent
+from .base_agent import BaseAgent
 
 load_dotenv()
 

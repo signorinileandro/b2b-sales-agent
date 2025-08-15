@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 import time
 from ..utils.logger import log
-from base_agent import BaseAgent
+from .base_agent import BaseAgent
 
 # Cargar variables de entorno
 load_dotenv()
@@ -19,10 +19,6 @@ class StockAgent(BaseAgent):
     
     def __init__(self):
         super().__init__(agent_name="StockAgent")
-        # ✅ USAR EL MISMO SISTEMA DE API KEYS QUE ConversationManager
-        self.api_keys = self._load_api_keys()
-        self.current_key_index = 0
-        self.key_retry_delays = {}  # Para tracking de delays por key
         
         if not self.api_keys:
             raise ValueError("No se encontraron GOOGLE_API_KEY en variables de entorno")

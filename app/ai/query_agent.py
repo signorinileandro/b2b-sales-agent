@@ -9,48 +9,19 @@ from datetime import datetime, timedelta
 from sqlalchemy import or_
 from ..utils.logger import log
 from dotenv import load_dotenv
+from base_agent import BaseAgent
 
 load_dotenv()
 
-class QueryAgent:
+class QueryAgent(BaseAgent):
     """Agente especializado en consultas y operaciones de base de datos"""
     
     def __init__(self):
+        super().__init__(agent_name="QueryAgent")
         self.api_keys = self._load_api_keys()
         self.current_key_index = 0
         self.model = None
         self._setup_current_key()
-    
-    def _load_api_keys(self):
-        api_keys = []
-        for i in range(1, 11):
-            key = os.getenv(f"GOOGLE_API_KEY_{i}")
-            if key:
-                api_keys.append(key.strip())
-        
-        if not api_keys:
-            main_key = os.getenv("GOOGLE_API_KEY")
-            if main_key:
-                api_keys.append(main_key)
-        
-        return api_keys
-    
-    def _setup_current_key(self):
-        if self.current_key_index < len(self.api_keys):
-            try:
-                current_key = self.api_keys[self.current_key_index]
-                genai.configure(api_key=current_key)
-                self.model = genai.GenerativeModel('gemini-1.5-flash')
-                log(f"🔍 Query Agent usando API Key #{self.current_key_index + 1}")
-                return True
-            except Exception as e:
-                log(f"❌ Error configurando API Key #{self.current_key_index + 1}: {e}")
-                return self._try_next_key()
-        return False
-    
-    def _try_next_key(self):
-        self.current_key_index += 1
-        return self._setup_current_key()
 
     async def extract_structured_intent(self, user_message: str, conversation_context: Dict) -> Dict:
         """Extrae intención estructurada del mensaje usando prompt específico"""
@@ -790,42 +761,6 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
             }
         finally:
             db.close()
-    
-    async def _make_gemini_request(self, prompt: str) -> str:
-        """Hace request a Gemini con rotación de keys"""
-        
-        max_attempts = len(self.api_keys)
-        
-        for attempt in range(max_attempts):
-            if not self.model:
-                if not self._try_next_key():
-                    break
-        
-            try:
-                response = self.model.generate_content(
-                    prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.1,
-                        max_output_tokens=500,
-                    )
-                )
-                
-                return response.text
-                
-            except Exception as e:
-                error_str = str(e).lower()
-                log(f"❌ Error con key #{self.current_key_index + 1}: {e}")
-                
-                if "429" in error_str or "quota" in error_str:
-                    # Cambiar a siguiente key
-                    if not self._try_next_key():
-                        break
-                    continue
-                else:
-                    # Error general, salir del loop
-                    break
-        
-        return None
 
 # Instancia global
 query_agent = QueryAgent()

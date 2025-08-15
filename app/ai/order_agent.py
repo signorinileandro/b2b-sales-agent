@@ -10,14 +10,16 @@ from dotenv import load_dotenv
 import time
 from fastapi import HTTPException
 import re
+from base_agent import BaseAgent
 
 # Cargar variables de entorno
 load_dotenv()
 
-class OrderAgent:
+class OrderAgent(BaseAgent):
     """Agente especializado en creación y gestión de pedidos"""
     
     def __init__(self):
+        super().__init__(agent_name="OrderAgent")
         # ✅ USAR EL MISMO SISTEMA DE API KEYS QUE ConversationManager
         self.api_keys = self._load_api_keys()
         self.current_key_index = 0
@@ -30,104 +32,6 @@ class OrderAgent:
         self._configure_gemini()
         
         print(f"🛒 OrderAgent inicializado con {len(self.api_keys)} API keys")
-    
-    def _load_api_keys(self) -> List[str]:
-        """Carga todas las API keys disponibles desde el .env"""
-        api_keys = []
-        
-        # Buscar todas las keys que sigan el patrón GOOGLE_API_KEY_X
-        for i in range(1, 10):  # Buscar hasta GOOGLE_API_KEY_9
-            key = os.getenv(f"GOOGLE_API_KEY_{i}")
-            if key:
-                api_keys.append(key)
-        
-        # También buscar la key genérica por compatibilidad
-        generic_key = os.getenv("GEMINI_API_KEY")
-        if generic_key and generic_key not in api_keys:
-            api_keys.append(generic_key)
-        
-        return api_keys
-    
-    def _configure_gemini(self):
-        """Configura Gemini con la API key actual"""
-        current_key = self.api_keys[self.current_key_index]
-        genai.configure(api_key=current_key)
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
-        print(f"🛒 OrderAgent configurado con API key #{self.current_key_index + 1}")
-    
-    def _switch_to_next_key(self):
-        """Cambia a la siguiente API key disponible"""
-        self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
-        self._configure_gemini()
-        print(f"🛒🔄 OrderAgent cambiado a API key #{self.current_key_index + 1}")
-    
-    async def _make_gemini_request_with_fallback(self, prompt: str, **kwargs):
-        """Hace petición a Gemini con fallback automático entre API keys"""
-        
-        max_retries = len(self.api_keys)  # Intentar con todas las keys
-        retry_count = 0
-        
-        while retry_count < max_retries:
-            try:
-                current_key_num = self.current_key_index + 1
-                print(f"🛒🔍 OrderAgent usando API Key #{current_key_num}")
-                
-                # Verificar si esta key tiene delay de retry
-                key_id = f"order_key_{self.current_key_index}"
-                if key_id in self.key_retry_delays:
-                    retry_time = self.key_retry_delays[key_id]
-                    if time.time() < retry_time:
-                        print(f"🛒⏰ API Key #{current_key_num} en cooldown hasta {datetime.fromtimestamp(retry_time)}")
-                        self._switch_to_next_key()
-                        retry_count += 1
-                        continue
-                
-                # Intentar la petición
-                response = self.model.generate_content(prompt, **kwargs)
-                
-                # Si llegamos aquí, la petición fue exitosa
-                # Limpiar cualquier delay previo para esta key
-                if key_id in self.key_retry_delays:
-                    del self.key_retry_delays[key_id]
-                
-                return response
-                
-            except Exception as e:
-                error_str = str(e).lower()
-                print(f"🛒❌ Error con API key #{current_key_num}: {e}")
-                
-                # Verificar si es error de cuota
-                if "quota" in error_str or "exceeded" in error_str or "429" in error_str:
-                    print(f"🛒🚫 API Key #{current_key_num} agotó su cuota")
-                    
-                    # Poner esta key en cooldown por 1 hora
-                    self.key_retry_delays[key_id] = time.time() + 3600
-                    
-                    # Cambiar a la siguiente key
-                    self._switch_to_next_key()
-                    retry_count += 1
-                    continue
-                    
-                elif "rate limit" in error_str or "rate_limit" in error_str:
-                    print(f"🛒⏳ API Key #{current_key_num} tiene rate limiting")
-                    
-                    # Cooldown más corto para rate limiting (5 minutos)
-                    self.key_retry_delays[key_id] = time.time() + 300
-                    
-                    # Cambiar a la siguiente key
-                    self._switch_to_next_key()
-                    retry_count += 1
-                    continue
-                    
-                else:
-                    # Error no relacionado con cuota, intentar una vez más con la siguiente key
-                    print(f"🛒🔄 Error general, intentando con siguiente key")
-                    self._switch_to_next_key()
-                    retry_count += 1
-                    continue
-        
-        # Si llegamos aquí, todas las keys fallaron
-        raise Exception(f"OrderAgent: Todas las API keys ({len(self.api_keys)}) han fallado o están en cooldown")
 
     async def handle_order_creation(self, message: str, conversation: Dict) -> str:
         """Maneja la creación de pedidos con análisis inteligente del mensaje"""

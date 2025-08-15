@@ -70,6 +70,40 @@ class SalesAgent:
             else:
                 db_result = await query_agent.execute_database_operation(intent, user_id)
             
+            # ✅ PLAN B: si no encontró nada, volver a buscar sin filtros estrictos
+            if (
+                intent['intent_type'] == 'search_products'
+                and db_result
+                and db_result.get('success')
+                and db_result['data'].get('total_found', 0) == 0
+            ):
+                print("🔄 Fallback: buscando alternativas sin filtros estrictos...")
+                
+                # Limpiar tipo_prenda para ampliar búsqueda
+                relaxed_filters = dict(intent['extracted_data'])
+                relaxed_filters["product_filters"] = {
+                    k: v for k, v in relaxed_filters["product_filters"].items() if k != "tipo_prenda"
+                }
+                
+                # Crear intent modificado para la búsqueda ampliada
+                fallback_intent = dict(intent)
+                fallback_intent['extracted_data'] = relaxed_filters
+                
+                try:
+                    fallback_result = await query_agent._search_products(relaxed_filters)
+                    
+                    # Si encontró algo, reemplazar db_result por este
+                    if fallback_result and fallback_result.get('success') and fallback_result['data']['total_found'] > 0:
+                        print(f"✅ Fallback encontró {fallback_result['data']['total_found']} productos")
+                        # Marcar que fue un fallback para ajustar respuesta
+                        fallback_result['is_fallback'] = True
+                        fallback_result['original_search'] = intent['extracted_data']['product_filters'].get('tipo_prenda', 'productos')
+                        db_result = fallback_result
+                    else:
+                        print("⚠️ Fallback tampoco encontró productos")
+                except Exception as e:
+                    print(f"❌ Error en fallback search: {e}")
+            
             print(f"🗄️ Operación DB: {db_result.get('operation', 'none')} - Éxito: {db_result.get('success', False)}")
             
             # ✅ AGREGAR DEBUG MÁS DETALLADO
@@ -134,6 +168,8 @@ class SalesAgent:
                 
                 original_term = db_result.get("extracted_data", {}).get("original_term")
                 mapped_term = db_result.get("extracted_data", {}).get("mapped_term")
+                is_fallback = db_result.get("is_fallback", False)
+                original_search = db_result.get("original_search", "")
                 
                 if len(products) == 0:
                     if original_term and mapped_term:
@@ -154,62 +190,40 @@ class SalesAgent:
                         else:
                             return "¿En qué tipo de prenda estás interesado? Tengo **camisetas**, **pantalones**, **sudaderas**, **camisas** y **faldas** disponibles."
                 
-                # Si encontró productos, mostrar con explicación del mapeo
-                header = "¡Perfecto! "
-                if original_term:
-                    header += f"Como no tengo {original_term} disponibles, te muestro las mejores **{mapped_term}s** que tengo"
+                # ✅ RESPUESTA MEJORADA PARA FALLBACK
+                if is_fallback and original_search:
+                    header = f"No encontré **{original_search}** específicamente, pero te muestro productos similares que tengo disponibles:\n\n"
+                elif original_term and mapped_term:
+                    header = f"¡Perfecto! Como no tengo {original_term} disponibles, te muestro las mejores **{mapped_term}s** que tengo:\n\n"
                 else:
-                    header += f"Te cuento qué tengo disponible"
-                
-                response = header + ":\n\n"
-                
-                for i, product in enumerate(products[:6], 1):  # Hasta 6 productos
-                    product_id = product.get('id', 'N/A')
-                    descripcion = product.get('descripcion', 'Material de calidad premium')
-                    categoria = product.get('categoria', 'General')
-                    
-                    # Encabezado del producto con ID para diferenciación
-                    response += f"**{i}. {product['name']} (#{product_id})**\n"
-                    
-                    # Info básica
-                    response += f"   🎨 **Color:** {product['color']} | 📏 **Talla:** {product['talla']}\n"
-                    response += f"   📂 **Categoría:** {categoria}\n"
-                    response += f"   📝 **Descripción:** {descripcion}\n"
-                    
-                    # Stock con indicadores visuales
-                    stock = product['stock']
-                    if stock < 50:
-                        stock_indicator = f"⚠️ **{stock} unidades** (¡Últimas disponibles!)"
-                    elif stock < 150:
-                        stock_indicator = f"📦 **{stock} unidades** (Stock limitado)"
-                    else:
-                        stock_indicator = f"✅ **{stock} unidades** (Excelente disponibilidad)"
-                    
-                    response += f"   {stock_indicator}\n"
-                    
-                    # Precios escalonados
-                    response += f"   💰 **Precios por volumen:**\n"
-                    response += f"      • 50+ unidades: **${product['precio_50_u']:,.0f}** c/u\n"
-                    response += f"      • 100+ unidades: **${product['precio_100_u']:,.0f}** c/u (-{((product['precio_50_u'] - product['precio_100_u']) / product['precio_50_u'] * 100):.0f}%)\n"
-                    response += f"      • 200+ unidades: **${product['precio_200_u']:,.0f}** c/u (-{((product['precio_50_u'] - product['precio_200_u']) / product['precio_50_u'] * 100):.0f}%)\n"
-                    
-                    response += "\n" + "─" * 50 + "\n\n"
-                
-                # Resumen final
-                total_stock = sum(p['stock'] for p in products)
+                    header = f"¡Excelente! Te muestro lo que tengo disponible:\n\n"
+
+                response = header
+
+                # Mostrar SOLO 3-4 productos principales con info clave
+                for i, product in enumerate(products[:4], 1):
+                    response += f"**{i}. {product['color'].title()} - Talla {product['talla']}** (#{product['id']})\n"
+                    response += f"   📦 Stock: **{product['stock']} unidades**\n"
+                    response += f"   💰 Precio: **${product['precio_50_u']:,.0f}** (50+ un.) | **${product['precio_100_u']:,.0f}** (100+ un.)\n\n"
+
+                # RESUMEN MUY DIRECTO
+                unique_colors = sorted(set(p['color'] for p in products))
                 unique_talles = sorted(set(p['talla'] for p in products))
-                unique_categorias = sorted(set(p.get('categoria', 'General') for p in products))
-                
-                response += f"📊 **RESUMEN GENERAL:**\n"
-                response += f"• **{len(products)} modelos** diferentes disponibles\n"
-                response += f"• **Talles:** {', '.join(unique_talles)}\n"
-                response += f"• **Categorías:** {', '.join(unique_categorias)}\n"
+                unique_types = sorted(set(p['tipo_prenda'] for p in products))
+                total_stock = sum(p['stock'] for p in products)
+
+                response += f"📋 **RESUMEN:**\n"
+                if is_fallback:
+                    response += f"• **Tipos:** {', '.join(unique_types)}\n"
+                response += f"• **Colores:** {', '.join(unique_colors)}\n"
+                response += f"• **Talles:** {', '.join(unique_talles)}\n" 
                 response += f"• **Stock total:** {total_stock:,} unidades\n"
-                response += f"• **Rango de precios:** ${min(p['precio_200_u'] for p in products):,.0f} - ${max(p['precio_50_u'] for p in products):,.0f}\n\n"
-                
-                response += "🎯 **¿Qué modelo te interesa más?** ¿Para cuántas personas necesitás?\n"
-                response += "💡 *Recordá que a mayor volumen, mejor precio por unidad*"
-                
+                response += f"• **Precio desde:** ${min(p['precio_200_u'] for p in products):,.0f} (200+ un.)\n\n"
+
+                # ✅ LLAMADA A LA ACCIÓN DIRECTA
+                response += f"🎯 **¿Cuántas unidades necesitás?** Te armo el presupuesto enseguida.\n"
+                response += f"💡 *A mayor cantidad, mejor precio por unidad.*"
+
                 return response
             
             elif operation == "check_stock" and data.get("products"):

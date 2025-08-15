@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
 
@@ -11,7 +11,6 @@ class ProductBase(BaseModel):
     precio_100_u: float
     precio_200_u: float
     stock: int
-    # ✅ AGREGAR CAMPOS FALTANTES
     descripcion: Optional[str] = None
     categoria: Optional[str] = None
 
@@ -31,11 +30,11 @@ class ProductResponse(BaseModel):
     
     class Config:
         from_attributes = True
-        populate_by_name = True
 
 class Product(ProductResponse):
     pass
 
+# ✅ SCHEMA SIMPLIFICADO PARA EL AI
 class ProductAIResponse(BaseModel):
     """Schema optimizado para respuestas del AI Agent"""
     id: int
@@ -49,26 +48,6 @@ class ProductAIResponse(BaseModel):
     stock: int
     descripcion: Optional[str] = "Material de calidad premium"
     categoria: Optional[str] = "General"
-    
-    @property
-    def precio_unitario_minimo(self) -> float:
-        """Precio más bajo disponible (200+ unidades)"""
-        return min(self.precio_50_u, self.precio_100_u, self.precio_200_u)
-    
-    @property
-    def descuento_volumen_max(self) -> int:
-        """Descuento máximo por volumen (%)"""
-        return int(((self.precio_50_u - self.precio_unitario_minimo) / self.precio_50_u) * 100)
-    
-    @property
-    def stock_status(self) -> str:
-        """Estado del stock para mensajes del AI"""
-        if self.stock < 50:
-            return "limited"  # ⚠️ Stock limitado
-        elif self.stock < 150:
-            return "moderate"  # 📦 Stock moderado
-        else:
-            return "excellent"  # ✅ Excelente disponibilidad
     
     class Config:
         from_attributes = True

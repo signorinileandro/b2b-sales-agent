@@ -142,14 +142,23 @@ class ConversationManager:
             # 1. Obtener conversación completa
             conversation = await self.get_full_conversation(phone)
             
-            # 2. Analizar intención con contexto completo (con fallback de API keys)
-            intent = await self.analyze_intent_with_context(message, conversation)
+            # 2. Analizar intención con contexto completo (ahora retorna Dict)
+            intent_analysis = await self.analyze_intent_with_context(message, conversation)  # ✅ CAMBIO
+            intent = intent_analysis["intent"]  # ✅ EXTRAER intent
             
             # 3. Derivar al agente especializado
             response = await self.dispatch_to_specialized_agent(intent, message, conversation)
             
-            # 4. Actualizar conversación
-            await self.update_conversation(phone, message, response, intent)
+            # ✅ AGREGAR reasoning al response si es modo debug
+            if os.getenv("DEBUG_MODE", "false").lower() == "true":
+                response += f"\n\n🤖 **DEBUG INFO:**\n"
+                response += f"• Intención: {intent_analysis['intent']}\n"
+                response += f"• Confianza: {intent_analysis['confidence']:.1f}\n"
+                response += f"• Método: {intent_analysis['method']}\n" 
+                response += f"• Reasoning: {intent_analysis['reasoning']}"
+            
+            # 4. Actualizar conversación (pasar reasoning también)
+            await self.update_conversation(phone, message, response, intent, intent_analysis.get('reasoning'))  # ✅ CAMBIO
             
             return response
             
@@ -250,68 +259,75 @@ class ConversationManager:
         finally:
             db.close()
     
-    async def analyze_intent_with_context(self, message: str, conversation: Dict) -> str:
-        """Analiza intención del usuario con contexto completo"""
+    async def analyze_intent_with_context(self, message: str, conversation: Dict) -> Dict:  # ✅ CAMBIO: retorna Dict en lugar de str
+        """Analiza intención del usuario con contexto completo Y reasoning"""
         
         try:
             # Crear prompt con contexto completo
-            prompt = self.create_intent_analysis_prompt(message, conversation)
+            prompt = self.create_intent_analysis_prompt_with_reasoning(message, conversation)  # ✅ NUEVO método
             
             # ✅ USAR SISTEMA DE FALLBACK DE API KEYS
             response = await self._make_gemini_request_with_fallback(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.1,
-                    max_output_tokens=50,
+                    max_output_tokens=150,  # ✅ AUMENTAR para incluir reasoning
                 )
             )
             
-            intent = response.text.strip().lower()
+            # ✅ PARSEAR JSON RESPONSE
+            response_text = response.text.strip()
             
-            # ✅ MEJORAR validación de intenciones
+            try:
+                # Limpiar respuesta JSON si viene con markdown
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:-3]
+                elif response_text.startswith("```"):
+                    response_text = response_text[3:-3]
+                
+                parsed_response = json.loads(response_text)
+                
+                intent = parsed_response.get("intent", "general_chat")
+                reasoning = parsed_response.get("reasoning", "No reasoning provided")
+                confidence = parsed_response.get("confidence", 0.8)
+                
+            except json.JSONDecodeError:
+                # Si no es JSON válido, extraer solo la intención como antes
+                intent = response_text.lower().strip()
+                reasoning = f"Respuesta de Gemini no fue JSON válido: {response_text}"
+                confidence = 0.5
+            
+            # ✅ VALIDAR intenciones
             valid_intents = ['check_stock', 'create_order', 'modify_order', 'sales_advice', 'general_chat']
             
             if intent not in valid_intents:
-                # Usar análisis más sofisticado
-                intent = self._analyze_intent_fallback(message, conversation)
+                # Usar análisis de fallback
+                fallback_result = self._analyze_intent_fallback_with_reasoning(message, conversation)
+                intent = fallback_result["intent"]
+                reasoning = f"Fallback usado. Original: {reasoning}. Fallback: {fallback_result['reasoning']}"
+                confidence = 0.6
             
-            print(f"🎯 Intención detectada: {intent} para mensaje: '{message}'")
-            return intent
+            result = {
+                "intent": intent,
+                "reasoning": reasoning,
+                "confidence": confidence,
+                "method": "gemini" if "Fallback" not in reasoning else "fallback"
+            }
+            
+            print(f"🎯 Intención detectada: {intent} (confianza: {confidence:.1f})")
+            print(f"🧠 Reasoning: {reasoning}")
+            
+            return result
             
         except Exception as e:
             print(f"❌ Error analizando intención: {e}")
-            return self._analyze_intent_fallback(message, conversation)
+            fallback_result = self._analyze_intent_fallback_with_reasoning(message, conversation)
+            fallback_result["reasoning"] = f"Error en Gemini: {str(e)}. {fallback_result['reasoning']}"
+            return fallback_result
 
-    def _analyze_intent_fallback(self, message: str, conversation: Dict) -> str:
-        """Análisis de intención más robusto como fallback"""
-        message_lower = message.lower()
-        
-        # Análisis contextual
-        recent_messages = conversation.get('messages', [])[-3:]
-        context_has_products = any('stock' in msg.get('content', '').lower() 
-                                  for msg in recent_messages 
-                                  if msg.get('role') == 'assistant')
-        
-        # Palabras clave más específicas
-        stock_keywords = ['stock', 'cuanto', 'cuánto', 'tenés', 'disponible', 'colores', 'talles', 'qué hay']
-        order_keywords = ['pedido', 'quiero', 'necesito', 'comprar', 'encargar', 'haceme']
-        modify_keywords = ['cambiar', 'modificar', 'cancelar', 'editar']
-        advice_keywords = ['recomendás', 'conviene', 'mejor', 'qué', 'para qué']
-        
-        # Detectar con prioridad contextual
-        if any(word in message_lower for word in modify_keywords) and conversation.get('recent_orders'):
-            return 'modify_order'
-        elif any(word in message_lower for word in order_keywords):
-            return 'create_order'
-        elif any(word in message_lower for word in stock_keywords):
-            return 'check_stock'
-        elif any(word in message_lower for word in advice_keywords):
-            return 'sales_advice'
-        else:
-            return 'general_chat'
-    
-    def create_intent_analysis_prompt(self, message: str, conversation: Dict) -> str:
-        """Crea prompt para análisis de intención"""
+    # ✅ NUEVO método para prompt con reasoning:
+    def create_intent_analysis_prompt_with_reasoning(self, message: str, conversation: Dict) -> str:
+        """Crea prompt para análisis de intención CON reasoning"""
         
         # Formatear mensajes recientes para contexto
         recent_messages = ""
@@ -333,11 +349,19 @@ CONVERSACIÓN RECIENTE:
 
 {recent_orders_info}
 
-Analiza la intención y responde SOLO con UNA de estas opciones:
+Analiza la intención y responde SOLO con JSON válido:
+
+{{
+    "intent": "check_stock|create_order|modify_order|sales_advice|general_chat",
+    "reasoning": "explicación_detallada_de_por_qué_elegiste_esta_intención",
+    "confidence": 0.0-1.0
+}}
+
+INTENCIONES DISPONIBLES:
 
 check_stock - Si pregunta por:
 - Stock disponible, inventario, cantidades
-- Colores, talles, tipos de productos
+- Colores, talles, tipos de productos  
 - "¿qué tenés?", "cuánto stock?", "qué colores hay?"
 
 create_order - Si quiere hacer pedido:
@@ -361,8 +385,69 @@ IMPORTANTE:
 - Considera el CONTEXTO completo, no solo el último mensaje
 - Si después de mostrar productos dice "quiero X cantidad" = create_order
 - Si pregunta por stock específico después de ver productos = check_stock
+- En "reasoning" explica claramente por qué elegiste esa intención
+- Sé específico sobre qué palabras clave o contexto influyó en tu decisión
 
-Respuesta (solo la intención):"""
+Ejemplo de respuesta:
+{{
+    "intent": "check_stock",
+    "reasoning": "El usuario pregunta 'qué colores tenés' lo cual es una consulta específica sobre variantes disponibles en inventario. La palabra 'tenés' indica consulta de disponibilidad.",
+    "confidence": 0.9
+}}"""
+
+    # ✅ NUEVO método de fallback con reasoning:
+    def _analyze_intent_fallback_with_reasoning(self, message: str, conversation: Dict) -> Dict:
+        """Análisis de intención con reasoning como fallback"""
+        message_lower = message.lower()
+        
+        # Análisis contextual
+        recent_messages = conversation.get('messages', [])[-3:]
+        context_has_products = any('stock' in msg.get('content', '').lower() 
+                                  for msg in recent_messages 
+                                  if msg.get('role') == 'assistant')
+        
+        # Palabras clave más específicas
+        stock_keywords = ['stock', 'cuanto', 'cuánto', 'tenés', 'disponible', 'colores', 'talles', 'qué hay']
+        order_keywords = ['pedido', 'quiero', 'necesito', 'comprar', 'encargar', 'haceme']
+        modify_keywords = ['cambiar', 'modificar', 'cancelar', 'editar']
+        advice_keywords = ['recomendás', 'conviene', 'mejor', 'qué', 'para qué']
+        
+        # Detectar con prioridad contextual y generar reasoning
+        if any(word in message_lower for word in modify_keywords) and conversation.get('recent_orders'):
+            matched_words = [word for word in modify_keywords if word in message_lower]
+            return {
+                "intent": "modify_order",
+                "reasoning": f"Palabras clave de modificación detectadas: {matched_words}. Usuario tiene pedidos recientes ({len(conversation.get('recent_orders', []))}) que puede modificar.",
+                "confidence": 0.8
+            }
+        elif any(word in message_lower for word in order_keywords):
+            matched_words = [word for word in order_keywords if word in message_lower]
+            return {
+                "intent": "create_order", 
+                "reasoning": f"Palabras clave de pedido detectadas: {matched_words}. Indica intención de compra/crear pedido.",
+                "confidence": 0.8
+            }
+        elif any(word in message_lower for word in stock_keywords):
+            matched_words = [word for word in stock_keywords if word in message_lower]
+            context_info = " Con contexto de productos mostrados." if context_has_products else ""
+            return {
+                "intent": "check_stock",
+                "reasoning": f"Palabras clave de consulta de stock: {matched_words}.{context_info} Indica búsqueda de información de inventario.",
+                "confidence": 0.8
+            }
+        elif any(word in message_lower for word in advice_keywords):
+            matched_words = [word for word in advice_keywords if word in message_lower]
+            return {
+                "intent": "sales_advice",
+                "reasoning": f"Palabras clave de asesoramiento: {matched_words}. Usuario busca consejos o recomendaciones comerciales.",
+                "confidence": 0.7
+            }
+        else:
+            return {
+                "intent": "general_chat",
+                "reasoning": f"No se detectaron palabras clave específicas en: '{message}'. Clasificado como conversación general/saludo.",
+                "confidence": 0.6
+            }
 
     async def dispatch_to_specialized_agent(self, intent: str, message: str, conversation: Dict) -> str:
         """Deriva al agente especializado según la intención"""
@@ -398,7 +483,7 @@ Respuesta (solo la intención):"""
         current_key_num = self.current_key_index + 1
         return f"¡Hola! Soy Ventix, tu asistente de ventas textiles. ¿En qué puedo ayudarte hoy?\n\n⚙️ Sistema activo con API Key #{current_key_num}\n\n🎯 Puedo mostrarte productos, consultar stock o ayudarte a hacer pedidos."
     
-    async def update_conversation(self, phone: str, user_message: str, bot_response: str, intent: str):
+    async def update_conversation(self, phone: str, user_message: str, bot_response: str, intent: str, reasoning: str = None):  # ✅ NUEVO parámetro
         """Actualiza la conversación en BD y memoria"""
         
         db = SessionLocal()
@@ -417,13 +502,14 @@ Respuesta (solo la intención):"""
                 db.commit()
                 db.refresh(conversation_record)
             
-            # Guardar mensaje del usuario
+            # Guardar mensaje del usuario CON REASONING
             user_msg = models.Message(
                 conversation_id=conversation_record.id,
                 user_phone=phone,
                 role='user',
                 content=user_message,
                 intent=intent,
+                reasoning=reasoning,  # ✅ NUEVO campo (necesitarás agregarlo al modelo)
                 timestamp=datetime.now()
             )
             db.add(user_msg)

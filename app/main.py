@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import OperationalError
 from .database import Base, engine, SessionLocal
 from . import crud, schemas, models
-from .ai.sales_agent import sales_agent
+from .ai.conversation_manager import conversation_manager
 import httpx
 from typing import Set
 
@@ -88,8 +88,8 @@ async def chat_with_agent(
         if not message.strip():
             return {"error": "Mensaje vacío"}
         
-        # Procesar mensaje con IA
-        ai_response = await sales_agent.process_message(user_id, message)
+        # ✅ USAR CONVERSATION_MANAGER
+        ai_response = await conversation_manager.process_message(user_id, message)
         
         return {
             "user_id": user_id,
@@ -173,7 +173,8 @@ async def webhook_whatsapp(request: Request):
                                 normalized_number = normalize_phone_number(from_number)
                                 
                                 try:
-                                    ai_response = await sales_agent.process_message(normalized_number, text_body)
+                                    # ✅ USAR CONVERSATION_MANAGER
+                                    ai_response = await conversation_manager.process_message(normalized_number, text_body)
                                     await send_ai_response_via_n8n(normalized_number, ai_response)
                                 except Exception as e:
                                     print(f"❌ Error procesando: {e}")
@@ -213,8 +214,8 @@ async def process_incoming_whatsapp_message(message: dict):
     print(f"📨 Mensaje de {user_phone}: {message_text}")
     
     if message_type == "text" and message_text:
-        # Procesar con el agente de IA
-        ai_response = await sales_agent.process_message(user_phone, message_text)
+        # ✅ USAR CONVERSATION_MANAGER
+        ai_response = await conversation_manager.process_message(user_phone, message_text)
         
         # Enviar respuesta vía n8n
         await send_ai_response_via_n8n(user_phone, ai_response)
@@ -261,7 +262,7 @@ def normalize_phone_number(phone: str) -> str:
     
     # NÚMEROS ARGENTINOS - Formato correcto WhatsApp: 541155744089 (13 dígitos)
     
-    # Caso 1: WhatsApp envía 54911155744089 → corregir a 541155744089
+    # Caso 1: WhatsApp envía 549111155744089 → corregir a 541155744089
     if clean_phone.startswith("5491") and len(clean_phone) == 13:
         # Solo remover el "9" del medio: 5491155744089 → 541155744089
         normalized = "541" + clean_phone[4:]  # "54" + "1" + resto
@@ -294,7 +295,8 @@ def normalize_phone_number(phone: str) -> str:
 async def get_user_products(user_id: str):
     """Obtiene productos que el usuario vio recientemente"""
     
-    context = sales_agent.context_memory.get(user_id, {})
+    # ✅ USAR CONVERSATION_MANAGER
+    context = conversation_manager.memory_cache.get(user_id, {})
     products = context.get("last_searched_products", [])
     
     return {

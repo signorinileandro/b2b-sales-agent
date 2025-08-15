@@ -49,6 +49,58 @@ class QueryAgent:
     async def extract_structured_intent(self, user_message: str, conversation_context: Dict) -> Dict:
         """Extrae intención estructurada del mensaje usando prompt específico"""
         
+        # ✅ MAPEO ACTUALIZADO CON PRODUCTOS REALES DE LA BD
+        user_message_mapped = user_message.lower()
+        
+        # Mapear términos que el cliente usa vs lo que hay REALMENTE en la DB
+        mappings = {
+            # CHAQUETAS Y ABRIGOS → SUDADERA (más similar)
+            "chaquetas": "sudadera",
+            "chaqueta": "sudadera", 
+            "camperas": "sudadera",
+            "campera": "sudadera",
+            "abrigos": "sudadera",
+            "abrigo": "sudadera",
+            "jackets": "sudadera",
+            "jacket": "sudadera",
+            "buzos": "sudadera",
+            "buzo": "sudadera",
+            
+            # REMERAS Y PLAYERAS → CAMISETA
+            "remeras": "camiseta",
+            "remera": "camiseta",
+            "playeras": "camiseta",
+            "playera": "camiseta",
+            "polos": "camiseta",
+            "polo": "camiseta",
+            "poleras": "camiseta",
+            
+            # CAMISAS (ya existe, pero por si hay variaciones)
+            "shirts": "camisa",
+            "shirt": "camisa",
+            
+            # PANTALONES (ya existe, pero por si hay variaciones)
+            "pantalones": "pantalón",
+            "jeans": "pantalón",
+            "jean": "pantalón",
+            
+            # FALDAS (ya existe, pero por si hay variaciones)
+            "faldas": "falda",
+            "polleras": "falda",
+            "pollera": "falda"
+        }
+        
+        original_term = None
+        mapped_term = None
+        
+        for original, mapped in mappings.items():
+            if original in user_message_mapped:
+                original_term = original
+                mapped_term = mapped
+                user_message_mapped = user_message_mapped.replace(original, mapped)
+                print(f"🔄 Mapeo aplicado: '{original}' → '{mapped}'")
+                break
+        
         extraction_prompt = f"""
 Eres un asistente especializado en extraer intenciones de mensajes de clientes B2B de textiles.
 
@@ -57,33 +109,44 @@ CONTEXTO DE LA CONVERSACIÓN:
 - Última consulta: "{conversation_context.get('last_search_query', '')}"
 - Historial: {conversation_context.get('conversation_history', [])}
 
-MENSAJE ACTUAL DEL CLIENTE: "{user_message}"
+MENSAJE ORIGINAL DEL CLIENTE: "{user_message}"
+MENSAJE PROCESADO: "{user_message_mapped}"
 
-Analiza el mensaje y responde SOLAMENTE con JSON válido con esta estructura:
+IMPORTANTE: Los productos disponibles son EXACTAMENTE:
+- TIPO_PRENDA: "pantalón", "camiseta", "falda", "sudadera", "camisa"
+- COLOR: "blanco", "negro", "azul", "verde", "gris", "rojo", "amarillo"
+- TALLA: "XS", "S", "M", "L", "XL", "XXL", "XXXL"
+
+MAPEOS AUTOMÁTICOS APLICADOS:
+- chaquetas/camperas/abrigos → sudadera
+- remeras/playeras/polos → camiseta  
+- jeans → pantalón
+- polleras → falda
+
+Analiza el mensaje y responde SOLAMENTE con JSON válido:
 
 {{
     "intent_type": "search_products" | "confirm_order" | "edit_order" | "ask_stock" | "general_question",
     "confidence": 0.0-1.0,
     "extracted_data": {{
         "product_filters": {{
-            "tipo_prenda": "camiseta|pantalón|sudadera|falda|null",
-            "color": "blanco|negro|azul|verde|gris|rojo|null", 
+            "tipo_prenda": "pantalón|camiseta|falda|sudadera|camisa|null",
+            "color": "blanco|negro|azul|verde|gris|rojo|amarillo|null", 
             "talla": "XS|S|M|L|XL|XXL|XXXL|null"
         }},
         "quantity": number_or_null,
-        "action_keywords": ["lista", "de", "palabras", "clave"],
+        "action_keywords": ["palabras", "clave"],
         "is_continuation": true_si_continua_conversacion_previa,
-        "specific_request": "descripción_específica_de_lo_que_pide"
+        "specific_request": "descripción_específica",
+        "original_term": "{original_term}",
+        "mapped_term": "{mapped_term}"
     }}
 }}
 
-EJEMPLOS:
-- "camisetas negras" → intent_type: "search_products", product_filters: {{"tipo_prenda": "camiseta", "color": "negro"}}
-- "tenes pantalones?" → intent_type: "search_products", product_filters: {{"tipo_prenda": "pantalón"}}
-- "200 en talle XL" → intent_type: "confirm_order", quantity: 200, product_filters: {{"talla": "XL"}}, is_continuation: true
-- "confirmo el pedido" → intent_type: "confirm_order"
-- "quiero cambiar a 100" → intent_type: "edit_order", quantity: 100
-- "cuántas tenés disponibles?" → intent_type: "ask_stock", is_continuation: true
+EJEMPLOS DE MAPEO:
+- "chaquetas negras para construcción" → {{"tipo_prenda": "sudadera", "color": "negro"}}
+- "remeras blancas talle L" → {{"tipo_prenda": "camiseta", "color": "blanco", "talla": "L"}}
+- "jeans azules" → {{"tipo_prenda": "pantalón", "color": "azul"}}
 
 Responde SOLO con el JSON, sin explicaciones adicionales.
 """
@@ -98,12 +161,135 @@ Responde SOLO con el JSON, sin explicaciones adicionales.
                 elif response_clean.startswith("```"):
                     response_clean = response_clean[3:-3]
                 
-                return json.loads(response_clean)
-            
+                parsed_intent = json.loads(response_clean)
+                
+                # ✅ AGREGAR INFO DE MAPEO AL RESULTADO
+                if original_term and mapped_term:
+                    parsed_intent["extracted_data"]["original_term"] = original_term
+                    parsed_intent["extracted_data"]["mapped_term"] = mapped_term
+                
+                return parsed_intent
+                
         except Exception as e:
             print(f"❌ Error extrayendo intención: {e}")
         
-        # Fallback básico
+        # ✅ FALLBACK MEJORADO CON TODOS LOS MAPEOS
+        user_lower = user_message.lower()
+        
+        # Chaquetas/camperas/abrigos → sudadera
+        if any(word in user_lower for word in ["chaqueta", "campera", "abrigo", "jacket", "buzo"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.8,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "sudadera", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["chaqueta", "mapped"],
+                    "is_continuation": False,
+                    "specific_request": user_message,
+                    "original_term": "chaquetas",
+                    "mapped_term": "sudadera"
+                }
+            }
+        
+        # Remeras/playeras → camiseta
+        if any(word in user_lower for word in ["remera", "playera", "polo", "polera"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.8,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "camiseta", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["remera", "mapped"],
+                    "is_continuation": False,
+                    "specific_request": user_message,
+                    "original_term": "remeras",
+                    "mapped_term": "camiseta"
+                }
+            }
+        
+        # Jeans → pantalón
+        if any(word in user_lower for word in ["jean", "jeans"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.8,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "pantalón", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["jean", "mapped"],
+                    "is_continuation": False,
+                    "specific_request": user_message,
+                    "original_term": "jeans",
+                    "mapped_term": "pantalón"
+                }
+            }
+        
+        # Búsquedas directas de productos existentes
+        if any(word in user_lower for word in ["camiseta", "camisetas"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "camiseta", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["camiseta"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["pantalón", "pantalones"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "pantalón", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["pantalón"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["camisa", "camisas"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "camisa", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["camisa"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["falda", "faldas", "pollera", "polleras"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "falda", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["falda"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
+        if any(word in user_lower for word in ["sudadera", "sudaderas"]):
+            return {
+                "intent_type": "search_products",
+                "confidence": 0.9,
+                "extracted_data": {
+                    "product_filters": {"tipo_prenda": "sudadera", "color": None, "talla": None},
+                    "quantity": None,
+                    "action_keywords": ["sudadera"],
+                    "is_continuation": False,
+                    "specific_request": user_message
+                }
+            }
+        
         return {
             "intent_type": "general_question",
             "confidence": 0.3,

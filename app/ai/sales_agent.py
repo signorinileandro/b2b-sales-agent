@@ -131,21 +131,37 @@ class SalesAgent:
             # ✅ RESPUESTA BASADA EN DATOS REALES
             if operation == "search_products" and data.get("products"):
                 products = data["products"]
+                
+                original_term = db_result.get("extracted_data", {}).get("original_term")
+                mapped_term = db_result.get("extracted_data", {}).get("mapped_term")
+                
                 if len(products) == 0:
-                    return "Lo siento, en este momento no tengo productos que coincidan con tu búsqueda. ¿Te interesa algún otro tipo de prenda?"
+                    if original_term and mapped_term:
+                        return f"¡Hola! Vi que buscás **{original_term}** para construcción. 👷‍♂️\n\n" \
+                               f"Como no tengo {original_term} específicas, te muestro **{mapped_term}s** que son perfectas para trabajo pesado y muy resistentes.\n\n" \
+                               f"¿Te interesa ver qué opciones tengo en **{mapped_term}s de trabajo**?"
+                    else:
+                        tipo_solicitado = db_result.get('data', {}).get('filters_applied', {}).get('tipo_prenda', '')
+                        if tipo_solicitado:
+                            return f"No encontré {tipo_solicitado}s que coincidan con tu búsqueda específica. 🔍\n\n" \
+                                   f"**¿Te interesa ver otros productos disponibles?**\n" \
+                                   f"• **Camisetas** - Cómodas y resistentes\n" \
+                                   f"• **Pantalones** - Ideales para trabajo\n" \
+                                   f"• **Sudaderas** - Perfectas para construcción\n" \
+                                   f"• **Camisas** - Para uso profesional\n" \
+                                   f"• **Faldas** - Línea femenina\n\n" \
+                                   f"¿Cuál te sirve más?"
+                        else:
+                            return "¿En qué tipo de prenda estás interesado? Tengo **camisetas**, **pantalones**, **sudaderas**, **camisas** y **faldas** disponibles."
                 
-                # ✅ RESPUESTA COMPLETA Y PROFESIONAL
-                color_buscado = data.get('filters_applied', {}).get('color', '')
-                tipo_buscado = data.get('filters_applied', {}).get('tipo_prenda', '')
+                # Si encontró productos, mostrar con explicación del mapeo
+                header = "¡Perfecto! "
+                if original_term:
+                    header += f"Como no tengo {original_term} disponibles, te muestro las mejores **{mapped_term}s** que tengo"
+                else:
+                    header += f"Te cuento qué tengo disponible"
                 
-                header = "¡Perfecto! Te cuento qué tengo disponible"
-                if color_buscado:
-                    header += f" en **{color_buscado.upper()}**"
-                if tipo_buscado:
-                    header += f" en **{tipo_buscado.upper()}S**"
-                header += ":\n\n"
-                
-                response = header
+                response = header + ":\n\n"
                 
                 for i, product in enumerate(products[:6], 1):  # Hasta 6 productos
                     product_id = product.get('id', 'N/A')

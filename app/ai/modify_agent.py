@@ -544,9 +544,5 @@ EJEMPLOS:
                 "error_type": "general"
             }
 
-    # ✅ ELIMINAR LOS MÉTODOS MANUALES (ya no los necesitamos)
-    # async def _cancel_order_manually(...)
-    # async def _update_quantity_manually(...)
-
 # Instancia global
 modify_agent = ModifyAgent()

@@ -38,13 +38,12 @@ class ConversationManager(BaseAgent):
             conversation = await self.get_full_conversation(phone)
             
             # 2. Analizar intención con contexto completo (ahora retorna Dict)
-            intent_analysis = await self.analyze_intent_with_context(message, conversation)  # ✅ CAMBIO
-            intent = intent_analysis["intent"]  # ✅ EXTRAER intent
+            intent_analysis = await self.analyze_intent_with_context(message, conversation)
+            intent = intent_analysis["intent"] 
             
             # 3. Derivar al agente especializado
             response = await self.dispatch_to_specialized_agent(intent, message, conversation)
             
-            # ✅ AGREGAR reasoning al response si es modo debug
             if os.getenv("DEBUG_MODE", "false").lower() == "true":
                 response += f"\n\n🤖 **DEBUG INFO:**\n"
                 response += f"• Intención: {intent_analysis['intent']}\n"
@@ -53,7 +52,7 @@ class ConversationManager(BaseAgent):
                 response += f"• Reasoning: {intent_analysis['reasoning']}"
             
             # 4. Actualizar conversación (pasar reasoning también)
-            await self.update_conversation(phone, message, response, intent, intent_analysis.get('reasoning'))  # ✅ CAMBIO
+            await self.update_conversation(phone, message, response, intent, intent_analysis.get('reasoning'))
             
             return response
             
@@ -153,13 +152,13 @@ class ConversationManager(BaseAgent):
             }
         finally:
             db.close()
-    
-    async def analyze_intent_with_context(self, message: str, conversation: Dict) -> Dict:  # ✅ CAMBIO: retorna Dict en lugar de str
+
+    async def analyze_intent_with_context(self, message: str, conversation: Dict) -> Dict:
         """Analiza intención del usuario con contexto completo Y reasoning"""
         
         try:
             # Crear prompt con contexto completo
-            prompt = self.create_intent_analysis_prompt_with_reasoning(message, conversation)  # ✅ NUEVO método
+            prompt = self.create_intent_analysis_prompt_with_reasoning(message, conversation)
             
             response_text = self.call_ollama([
                 {"role": "system", "content": "Eres un dispatcher inteligente para un sistema de ventas B2B textil."},

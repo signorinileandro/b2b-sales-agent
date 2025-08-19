@@ -135,10 +135,8 @@ async def smart_inventory_search(
         ]
     }
 
-# En main.py, AGREGAR al inicio:
 processed_messages: Set[str] = set()
 
-# REEMPLAZAR webhook_whatsapp:
 @app.post("/webhook/whatsapp")
 async def webhook_whatsapp(request: Request):
     """Webhook para recibir mensajes de WhatsApp"""
